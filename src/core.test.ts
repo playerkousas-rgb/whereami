@@ -20,4 +20,13 @@ describe('live info parsing',()=>{
   expect(normalizeDateStr('2026-06-30')).toBe('2026-06-30');
   expect(normalizeDateStr(undefined)).toBeUndefined();
  });
+ it('converts CSDI/ArcGIS epoch-millisecond dates to HKT date string',()=>{
+  // 1697299200000 = 2023-10-15T00:00:00+08:00 (EFFECTIVE_DATE in AFCD closed-trail dataset)
+  expect(normalizeDateStr('1697299200000')).toBe('2023-10-15 00:00');
+  // 1730044800000 = 2024-10-28T00:00:00+08:00 (EFFECTIVE_DATE in AFCD closed-facility dataset)
+  expect(normalizeDateStr('1730044800000')).toBe('2024-10-28 00:00');
+  // 1363276800000 = 2013-03-15T00:00:00+08:00 — an old-but-still-in-force closure
+  expect(normalizeDateStr('1363276800000')).toBe('2013-03-15 00:00');
+  expect(normalizeDateStr('not-a-date')).toBe('not-a-date');
+ });
 });
