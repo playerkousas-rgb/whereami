@@ -344,7 +344,7 @@ function App() {
                       {f.items.map((item, i) => {
                         const isClosed = item.detail?.includes('封閉') || item.title.includes('封閉');
                         const isDivert = item.detail?.includes('改道') || item.title.includes('改道');
-                        const isCancel = item.statusBadge === '已取消';
+                        const isCancel = item.statusBadge === '已取消' || item.statusBadge === '完結';
                         const isAlert = item.statusBadge === '生效中' || item.title.includes('警告');
                         return (
                           <div className="feed-item" key={i}>

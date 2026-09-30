@@ -32,6 +32,17 @@ export function translateStatus(s?: string): string {
 export function normalizeDateStr(raw?: string): string | undefined {
   if (!raw) return undefined;
   const s = raw.trim();
+  // ArcGIS/CSDI 日期欄位（如 EFFECTIVE_DATE）以 epoch 毫秒（有時是秒）表示，須轉成人類可讀的 HKT 日期。
+  if (/^\d{12,14}$/.test(s)) {
+    const ms = s.length === 10 ? Number(s) * 1000 : Number(s);
+    const d = new Date(ms);
+    if (!Number.isNaN(d.getTime())) {
+      const hkt = new Date(ms + 8 * 3600 * 1000); // 香港官方資料以 HKT 表示
+      const p = (n: number) => String(n).padStart(2, '0');
+      return `${hkt.getUTCFullYear()}-${p(hkt.getUTCMonth() + 1)}-${p(hkt.getUTCDate())} ${p(hkt.getUTCHours())}:${p(hkt.getUTCMinutes())}`;
+    }
+    return s;
+  }
   if (/^\d{8}$/.test(s)) {
     return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
   }
@@ -112,13 +123,16 @@ async function fetchOne(feed: typeof feeds[number]): Promise<FeedResult> {
           }
           return undefined;
         };
-        const park = value(['country_park_tc', 'cp_name_tc', 'park_name_tc', 'country_park']);
+        const park = value(['country_park_tc', 'cp_name_tc', 'park_name_tc', 'country_park', 'location_tc']);
         const rawName = value(['facility_tc', 'facility_name_tc', 'trail_name_tc', 'name_tc', 'fac_name_tc', 'facility', 'fac_type_tc', 'name', 'trail_name']);
         const title = rawName ? (park && !rawName.includes(park) ? `${park} · ${rawName}` : rawName) : `${feed.name} ${i + 1}`;
         const rawStatus = value(['status_tc', 'status']);
         const statusText = translateStatus(rawStatus);
+        // 漁護署 CSDI 數據集以 EXPECTED_EXPIRY_DATE 註明封閉期限（如 "Until further notice"）。
+        const expiryRaw = value(['expected_expiry']);
+        const expiry = expiryRaw === 'Until further notice' ? '直至另行通知' : expiryRaw;
         const remarks = value(['remarks_tc', 'reason_tc', 'remarks', 'reason', 'detail_tc', 'detail']);
-        const detailParts = [statusText, remarks].filter(Boolean);
+        const detailParts = [statusText, expiry, remarks].filter(Boolean);
         const detail = detailParts.join(' — ') || undefined;
         const geometry = (f as { geometry?: { type?: string; coordinates?: unknown } }).geometry;
         const coords = Array.isArray(geometry?.coordinates) ? geometry.coordinates as number[] : [];
@@ -154,16 +168,30 @@ async function fetchOne(feed: typeof feeds[number]): Promise<FeedResult> {
         };
         const location = findField('LOCATION_CN', 'LOCATION_TC', 'ROAD_CLOSED', 'LOCATION_EN');
         const direction = findField('DIRECTION_CN', 'DIRECTION_TC', 'DIRECTION_EN');
+        const district = findField('DISTRICT_CN', 'DISTRICT_TC', 'DISTRICT');
+        const nearLandmark = findField('NEAR_LANDMARK_CN', 'NEAR_LANDMARK');
         const rawHeading = findField('INCIDENT_HEADING_CN', 'INCIDENT_HEADING_TC', 'INCIDENT_HEADING', 'ChinShortText', 'ChinText', 'heading_tc', 'heading_cn', 'heading', 'title', 'Heading', 'IncidentHeading', 'headline', 'subject', 'INCIDENT_HEADING_EN');
-        const rawDetail = findField('INCIDENT_DETAIL_CN', 'INCIDENT_DETAIL_TC', 'INCIDENT_DETAIL', 'INCIDENT_DESC', 'ChinText', 'detail_tc', 'detail_cn', 'content', 'description', 'Content', 'IncidentDetail', 'detail', 'desc', 'INCIDENT_DETAIL_EN');
+        // 運輸署第二代：INCIDENT_DETAIL_CN 只是事故性質（如「交通意外」），完整內容在 CONTENT_CN。
+        const rawNature = findField('INCIDENT_DETAIL_CN', 'INCIDENT_DETAIL_TC', 'INCIDENT_DETAIL');
+        const rawDetail = findField('CONTENT_CN', 'CONTENT', 'INCIDENT_DETAIL_CN', 'INCIDENT_DESC', 'ChinText', 'detail_tc', 'detail_cn', 'description', 'Content', 'IncidentDetail', 'detail', 'desc', 'INCIDENT_DETAIL_EN');
+        const rawStatus = findField('INCIDENT_STATUS_CN', 'INCIDENT_STATUS');
+        const statusBadge = rawStatus === 'NEW' ? '最新情況' : rawStatus === 'UPDATED' ? '更新情況' : rawStatus === 'CLOSED' ? '完結' : rawStatus || undefined;
         let title = rawHeading || `交通消息 ${i + 1}`;
         if (location && rawHeading && !rawHeading.includes(location)) {
-          title = `${location}${direction ? ` (${direction})` : ''} · ${rawHeading}`;
+          const dirPart = direction && !location.includes(direction) ? `（往${direction}方向）` : '';
+          const naturePart = rawNature && rawNature !== rawHeading ? `：${rawNature}` : '';
+          title = `${location}${dirPart} · ${rawHeading}${naturePart}`;
         }
+        const latNum = Number(findField('LATITUDE', 'latitude'));
+        const lngNum = Number(findField('LONGITUDE', 'longitude'));
+        const detailParts = [district, nearLandmark ? `近${nearLandmark}` : '', rawDetail].filter(Boolean);
         return {
           title,
-          detail: rawDetail,
-          publishedAt: normalizeDateStr(findField('INCIDENT_DATE', 'date', 'pubDate', 'AnnounceDate', 'reference_date', 'ANNOUNCEDATE', 'INCIDENT_TIME', 'time', 'IncidentDate')),
+          detail: detailParts.join(' — ') || undefined,
+          publishedAt: normalizeDateStr(findField('ANNOUNCEMENT_DATE', 'INCIDENT_DATE', 'date', 'pubDate', 'AnnounceDate', 'reference_date', 'ANNOUNCEDATE', 'INCIDENT_TIME', 'time', 'IncidentDate')),
+          lat: Number.isFinite(latNum) && latNum >= 22 && latNum <= 23 ? latNum : undefined,
+          lng: Number.isFinite(lngNum) && lngNum >= 113 && lngNum <= 115 ? lngNum : undefined,
+          statusBadge,
         };
       });
       count = items.length;
