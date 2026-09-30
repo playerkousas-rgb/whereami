@@ -1,0 +1,10 @@
+{
+  "name": "Where Am I · 香港定位工具",
+  "short_name": "WhereAmI",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f0e8",
+  "theme_color": "#12372a",
+  "lang": "zh-Hant",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
