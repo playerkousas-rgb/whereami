@@ -1,7 +1,7 @@
 import { formatHkt } from './coordinates';
 
 export type FeedState = 'idle' | 'loading' | 'fresh' | 'cached' | 'unavailable' | 'invalid';
-export interface FeedItem { title:string; detail?:string; publishedAt?:string; }
+export interface FeedItem { title:string; detail?:string; publishedAt?:string; lat?:number; lng?:number; }
 export interface FeedResult { id: string; name: string; source: string; state: FeedState; count?: number; fetchedAt?: string; publishedAt?: string; message: string; items?:FeedItem[]; }
 
 const feeds = [
@@ -28,7 +28,7 @@ async function fetchOne(feed: typeof feeds[number]): Promise<FeedResult> {
       items=Object.entries(data).map(([key,value])=>{const v=value as Record<string,unknown>;return {title:String(v?.name||v?.warningStatementCode||key),detail:typeof v?.actionCode==='string'?v.actionCode:undefined,publishedAt:typeof v?.updateTime==='string'?v.updateTime:undefined}});count=items.length;
     } else if (feed.kind === 'geojson') {
       const data = JSON.parse(text); if (data?.type !== 'FeatureCollection' || !Array.isArray(data.features)) throw new Error('GeoJSON 結構不符');
-      items=data.features.map((f:{properties?:Record<string,unknown>},i:number)=>{const p=f.properties||{};const value=(keys:string[])=>{for(const k of keys){const hit=Object.entries(p).find(([x,v])=>x.toLowerCase().includes(k)&&v);if(hit)return String(hit[1])}return undefined};return {title:value(['name_tc','trail_name_tc','facility_name_tc','name'])||`${feed.name} ${i+1}`,detail:value(['remarks_tc','reason_tc','detail','status']),publishedAt:value(['update','date'])}});count=items.length;
+      items=data.features.map((f:{properties?:Record<string,unknown>},i:number)=>{const p=f.properties||{};const value=(keys:string[])=>{for(const k of keys){const hit=Object.entries(p).find(([x,v])=>x.toLowerCase().includes(k)&&v);if(hit)return String(hit[1])}return undefined};const geometry=(f as {geometry?:{type?:string;coordinates?:unknown}}).geometry; const coords=Array.isArray(geometry?.coordinates)?geometry.coordinates as number[]:[]; const lat=Number(p.lat??p.latitude??p.y??(geometry?.type==='Point'?coords[1]:NaN)); const lng=Number(p.lng??p.longitude??p.x??(geometry?.type==='Point'?coords[0]:NaN)); return {title:value(['name_tc','trail_name_tc','facility_name_tc','name'])||`${feed.name} ${i+1}`,detail:value(['remarks_tc','reason_tc','detail','status']),publishedAt:value(['update','date']),lat:Number.isFinite(lat)?lat:undefined,lng:Number.isFinite(lng)?lng:undefined}});count=items.length;
     } else {
       const doc = new DOMParser().parseFromString(text, 'application/xml'); if (doc.querySelector('parsererror')) throw new Error('XML 格式錯誤');
       if (!doc.documentElement || doc.documentElement.nodeName.toLowerCase() === 'html') throw new Error('收到非預期網頁');
