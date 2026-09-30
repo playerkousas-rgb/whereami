@@ -41,3 +41,12 @@ const dirs=['北','東北','東','東南','南','西南','西','西北'];
 export function nearestFacilities(db:FacilityDatabase,lat:number,lng:number,type:'all'|FacilityType='all',limit=30):NearbyFacility[] { return db.items.filter(x=>type==='all'||x.type===type).map(x=>{const bearing=bearingDegrees(lat,lng,x.lat,x.lng);return {...x,distance:distanceMeters(lat,lng,x.lat,x.lng),bearing,direction:dirs[Math.round(bearing/45)%8]};}).sort((a,b)=>a.distance-b.distance).slice(0,limit); }
 export const facilityName:Record<FacilityType,string>={toilet:'公廁',aed:'AED',water:'加水站',distance_post:'標距柱',fire_station:'消防局',ambulance_station:'救護站',police:'警署',hospital:'醫院／急症室',other:'其他設施'};
 export const formatDistance=(m:number)=>m<1000?`${Math.round(m)} 米`:`${(m/1000).toFixed(1)} 公里`;
+// Some phone Chinese input methods default to full-width (全形) letters/digits. Without this, a
+// physically correct code typed in full-width form (e.g. "Ｍ０４７") would silently fail to match the
+// half-width codes used by every official dataset — wrongly telling a stressed user "not found" for
+// a code that is actually correct.
+export const normalizeCode = (s: string): string => s
+  .replace(/[\uFF01-\uFF5E]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+  .replace(/\u3000/g, ' ')
+  .trim().toUpperCase().replace(/\s+/g, '');
+

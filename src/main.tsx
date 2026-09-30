@@ -2,7 +2,7 @@ import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'rea
 import { createRoot } from 'react-dom/client';
 import { convertCoordinates, formatHkt, type ConvertedCoordinates } from './coordinates';
 import { cachedFeeds, feedTime, refreshAll, stateLabel, type FeedResult } from './liveInfo';
-import { clearFacilityUpdate, distanceMeters, facilityName, formatDistance, hasFacilityOverride, loadFacilities, nearestFacilities, refreshFacilities, type Facility, type FacilityDatabase, type FacilityType } from './facilities';
+import { clearFacilityUpdate, distanceMeters, facilityName, formatDistance, hasFacilityOverride, loadFacilities, nearestFacilities, normalizeCode, refreshFacilities, type Facility, type FacilityDatabase, type FacilityType } from './facilities';
 // Lazy-loaded: leaflet (~350kB) is only fetched once the user actually opens a map tab,
 // instead of bloating the initial JS payload for everyone. FACILITY_COLORS/ALERT_COLOR live
 // in the dependency-free ./mapStyles so the legend can render before the map chunk arrives.
@@ -70,7 +70,7 @@ function App() {
   };
 
   const confirmLandmark = async () => {
-    const q=landmarkQuery.trim().toUpperCase().replace(/\s+/g,'');
+    const q=normalizeCode(landmarkQuery);
     if(!q){setLandmarkMessage('請輸入完整柱號');return;}
     if(!facilityDb?.items.length){setLandmarkMessage('內置地標資料尚未建立，暫時不能核對柱號');return;}
     const candidates=facilityDb.items.filter(x=>x.type==='distance_post'||x.type==='other');
@@ -98,6 +98,10 @@ function App() {
   const checkMapUpdate = async (region:typeof MAP_REGIONS[number]) => { setMapChecking(region.id); setMapUpdateStatus(x=>({...x,[region.id]:'正在向官方檢查圖磚版本…'})); try { const result=await checkRegionUpdate(region); setMapUpdateStatus(x=>({...x,[region.id]:result.updated?'發現可能有新版，請重新下載':'暫未發現新版（只檢查代表性圖磚）'})); } catch { setMapUpdateStatus(x=>({...x,[region.id]:'暫時未能檢查官方版本'})); } finally { setMapChecking(null); } };
   const refresh = async () => { setRefreshing(true); setFeeds(x => x.map(f => ({...f, state: 'loading'}))); await refreshAll(r => setFeeds(x => x.map(f => f.id === r.id ? r : f))); setRefreshing(false); };
   const shown = locked || position;
+  // Copy/share feedback ("已複製報位資料" etc.) is meaningful only right after the action that
+  // produced it — clear it on tab switches and when the SOS modal closes so stale confirmation
+  // text from a previous screen never lingers and gets mistaken for feedback on a new action.
+  useEffect(() => { setCopyState(''); }, [tab, sosOpen]);
   const referencePoint = confirmedLandmark ? {lat:confirmedLandmark.lat,lng:confirmedLandmark.lng,label:`已確認地標 ${confirmedLandmark.name}`} : shown ? {lat:shown.coords.latitude,lng:shown.coords.longitude,label:'裝置定位'} : null;
   // Always computed across ALL facility types (never filtered by the "附近" tab's type chips) so the
   // "定位" tab map/legend and the SOS report's rescuer hint stay stable no matter what a user last
@@ -121,6 +125,17 @@ function App() {
   const confirmedCoords = useMemo(() => confirmedLandmark ? convertCoordinates(confirmedLandmark.lat, confirmedLandmark.lng) : null, [confirmedLandmark]);
   const positionAge = shown ? Math.max(0, Math.round((Date.now()-shown.timestamp)/1000)) : null;
   const copyReport = async () => { try { await navigator.clipboard.writeText(report); setCopyState('已複製報位資料'); } catch { setCopyState('未能自動複製，請長按下方文字複製'); } };
+  // navigator.share is silently absent on many desktop browsers and some devices — a button that
+  // does nothing when pressed is a real trap in an emergency flow. Always fall back to clipboard
+  // copy (with visible feedback) instead of failing silently.
+  const shareOrCopy = async (text: string, title: string) => {
+    const canShare = 'share' in navigator;
+    if (canShare) {
+      try { await navigator.share({ title, text }); return; } catch (e) { if (e instanceof DOMException && e.name === 'AbortError') return; }
+    }
+    try { await navigator.clipboard.writeText(text); setCopyState(canShare ? '分享未能完成，已改為複製到剪貼簿' : '此裝置不支援分享，已複製到剪貼簿'); }
+    catch { setCopyState('未能分享或複製，請長按下方文字手動複製'); }
+  };
 
   useEffect(() => {
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -136,6 +151,11 @@ function App() {
   const mapPoint = shown ? {lat:shown.coords.latitude,lng:shown.coords.longitude,accuracy:shown.accuracy} : confirmedLandmark ? {lat:confirmedLandmark.lat,lng:confirmedLandmark.lng,accuracy:0} : null;
   // Filtered by the "附近" tab's type chips — intentionally independent from mapFacilities above.
   const nearby = useMemo(() => referencePoint && facilityDb ? nearestFacilities(facilityDb, referencePoint.lat, referencePoint.lng, facilityType, 30) : [], [referencePoint?.lat, referencePoint?.lng, facilityDb, facilityType]);
+  // HK hikers navigate by matching official distance-post codes to the ground, not raw coordinates.
+  // Surface the closest few directly on the "定位" tab (not buried a tab away) so someone lost can
+  // immediately see "walk toward M047, 82m 東北" without extra taps.
+  const nearestPosts = useMemo(() => mapFacilities.filter(x => x.type === 'distance_post').slice(0, 3), [mapFacilities]);
+  const mapsAppLink = (lat: number, lng: number, label: string) => `https://www.google.com/maps/search/?api=1&query=${lat},${lng}(${encodeURIComponent(label)})`;
   const mapAlerts = useMemo(() => [...(feeds.find(f=>f.id==='trails')?.items||[]), ...(feeds.find(f=>f.id==='facilities')?.items||[])], [feeds]);
   const mapLegend = useMemo(() => { const types=[...new Set(mapFacilities.slice(0,50).map(x=>x.type))]; return types.map(t=>({label:facilityName[t],color:FACILITY_COLORS[t]||FACILITY_COLORS.other})); }, [mapFacilities]);
   const offlineCoverage=shown?MAP_REGIONS.filter(r=>shown.coords.latitude>=r.bounds[0]&&shown.coords.latitude<=r.bounds[2]&&shown.coords.longitude>=r.bounds[1]&&shown.coords.longitude<=r.bounds[3]).map(r=>({name:r.name,ready:maps.some(x=>x.id===r.id&&x.complete)})):[];
@@ -158,6 +178,7 @@ function App() {
       {tab === 'locate' && <>
         <section className="hero-card">
           <div className="status-row"><span className={`dot ${position?'ok':''}`}></span>{position ? (tracking?'裝置持續定位中':'已取得裝置位置') : posError}</div>
+          {tracking && position && posError && <p className="danger-message tracking-warning">持續定位暫時收不到新訊號：{posError}目前顯示嘅係最後一次成功定位（{formatHkt(position.timestamp)}），並非即時位置，請留意。</p>}
           {shown ? <><div className="latlng">{shown.coords.latitude.toFixed(6)}<br/>{shown.coords.longitude.toFixed(6)}</div><div className="accuracy">誤差半徑 ±{Math.round(shown.accuracy)} 米 · {formatHkt(shown.timestamp)}</div>{quality&&<div className={`quality ${quality.tone}`}><strong>定位品質：{quality.label}</strong><span>{quality.note}</span></div>}</> : <div className="empty">按下定位，讓裝置取得你目前的位置。GNSS 可在沒有流動數據時運作。</div>}
           <div className="locate-actions"><button className="primary" disabled={locating} onClick={locate}>{locating?'定位中…':'找出我在哪裡'}</button><button className="secondary-dark" onClick={toggleTracking}>{tracking?'停止持續定位':'持續定位'}</button></div>
         </section>
@@ -168,7 +189,8 @@ function App() {
           <article><label>UTM</label><strong>{shown.coords.zone}Q</strong><small>E {Math.round(shown.coords.utmE)} · N {Math.round(shown.coords.utmN)}</small></article>
           <article><label>位置紀錄</label><strong>{locked?'已鎖定':'即時位置'}</strong><small>{shown.altitude == null ? '裝置未提供高度' : `高度 ${Math.round(shown.altitude)} 米`}</small></article>
         </section>}
-        {shown && <div className="actions"><button onClick={()=>setLocked(locked?null:position)}>{locked?'解除位置鎖定':'鎖定這個位置'}</button><button onClick={copyReport}>複製報位資料</button><button onClick={()=>navigator.share?.({title:'我的位置',text:report}).catch(()=>{})}>分享</button></div>}
+        {shown && <><div className="actions"><button onClick={()=>setLocked(locked?null:position)}>{locked?'解除位置鎖定':'鎖定這個位置'}</button><button onClick={copyReport}>複製報位資料</button><button onClick={()=>shareOrCopy(report,'我的位置')}>分享</button></div>{copyState&&<p className="copy-state">{copyState}</p>}</>}
+        {nearestPosts.length>0 && <section className="landmark-card wayfinding-card"><span className="eyebrow">WAYFINDING</span><h2>附近標距柱（由近至遠）</h2><p>行山遠足時，官方標距柱是最可靠嘅實體參考。可以行去下面其中一支，核對柱號是否同眼前一樣。</p><div className="post-list">{nearestPosts.map(p=><div className="post-item" key={p.id}><strong>{p.name}</strong><span>{formatDistance(p.distance)} · {p.direction} {Math.round(p.bearing)}°</span><a href={mapsAppLink(p.lat,p.lng,p.name)} target="_blank" rel="noreferrer">在地圖 App 開啟路線（需要網絡）</a></div>)}</div></section>}
         <section className="landmark-card"><span className="eyebrow">KNOWN LANDMARK</span><h2>用眼前柱號核實位置</h2><p>輸入完整標距柱編號；日後下載所屬地區燈柱資料後亦可查燈柱。系統只接受完全相符的唯一結果。</p><div className="landmark-search"><input value={landmarkQuery} onChange={e=>setLandmarkQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')confirmLandmark()}} placeholder="例如 M047"/><button onClick={confirmLandmark}>核對</button></div>{landmarkMessage&&<p className={confirmedLandmark?'landmark-ok':'landmark-error'}>{landmarkMessage}</p>}{confirmedLandmark&&confirmedCoords&&<div className="confirmed-landmark"><strong>現在位置參考：{confirmedLandmark.name}</strong><span>WGS84　{confirmedLandmark.lat.toFixed(6)}, {confirmedLandmark.lng.toFixed(6)}</span><span>HK1980　E {Math.round(confirmedCoords.hkE)}　N {Math.round(confirmedCoords.hkN)}</span><span>方格　{confirmedCoords.grid8}</span><small>地圖紅點為已確認地標位置；藍點及誤差圈為裝置定位。附近設施將以地標座標作位置參考。</small><button onClick={()=>{setConfirmedLandmark(null);setLandmarkMessage('')}}>取消確認</button></div>}</section>
       </>}
 
@@ -178,10 +200,10 @@ function App() {
 
       {tab === 'sources' && <section className="sources-page"><span className="eyebrow">DATA TRANSPARENCY</span><h2>資料來源及版權聲明</h2><p className="source-intro">「出發前」及「附近」分頁已在 App 內完整顯示目前天氣、警告、封路、封閉山徑及設施資料，毋須另外前往官方網站查看。以下連結只供核對原始出處及版權，不代表官方機構立場；資料可能延遲、缺漏或暫時無法取得，使用前請查看每項資料的狀態及時間。</p><div className="source-list"><article><div><h3>香港地政總署 · 地圖底圖及標記</h3><p>用於地圖顯示、香港地圖方格及離線底圖。</p></div><a href="https://www.landsd.gov.hk/" target="_blank" rel="noreferrer">地政總署 ↗</a></article><article><div><h3>香港天文台 · 天氣警告</h3><p>用於顯示目前天氣警告及官方發布時間。</p></div><a href="https://www.hko.gov.hk/tc/wxinfo/currwx/" target="_blank" rel="noreferrer">香港天文台 ↗</a></article><article><div><h3>運輸署 · 封路及交通事故</h3><p>用於顯示交通消息及道路狀況。</p></div><a href="https://www.td.gov.hk/" target="_blank" rel="noreferrer">運輸署 ↗</a></article><article><div><h3>漁農自然護理署／CSDI · 封閉山徑及郊野設施</h3><p>用於顯示封閉山徑、關閉設施及其地圖位置。官方資料日期與本機刷新時間分開顯示。</p></div><a href="https://portal.csdi.gov.hk/" target="_blank" rel="noreferrer">CSDI ↗</a></article><article><div><h3>政府部門設施資料</h3><p>{facilityDb?.sources.length ? `本機目前版本包含 ${facilityDb.sources.length} 個來源；最近建置／更新：${facilityDb.generatedAt ? formatHkt(facilityDb.generatedAt) : '未有時間'}` : '尚未下載或建立設施資料。下載後會在此顯示實際來源及抓取時間。'}</p>{facilityDb?.sources.map(source=><small className="source-record" key={source.url}>{source.name} · 抓取：{formatHkt(source.retrievedAt)} · <a href={source.url} target="_blank" rel="noreferrer">原始連結</a></small>)}</div></article><article><div><h3>裝置定位及離線資料</h3><p>目前位置來自使用者裝置的 GNSS／定位服務；燈柱資料下載後會顯示其官方資料來源。離線資料只會在完成驗證後標示為可用。</p></div></article></div><div className="copyright-box"><strong>版權及使用限制</strong><p>地圖、政府資料及各資料集的版權、授權及使用條款歸原資料提供者所有。Scout System 不主張擁有上述資料；請遵守各官方網站的授權、署名及再發布要求。App 內容只供戶外安全輔助，緊急情況請致電 999／112。</p></div></section>}
 
-      {tab === 'nearby' && <section><span className="eyebrow">NEARBY</span><h2>附近資訊</h2>{!referencePoint ? <div className="empty">先到「定位」取得目前位置，才能計算附近設施。</div> : facilityLoading ? <div className="empty">正在載入內置設施資料…</div> : facilityError ? <div className="empty">{facilityError}，因此暫時未能列出附近設施。這不代表附近沒有 AED、公廁或救援服務；如果你能看到現場的標距柱或燈柱編號，仍可到「定位」頁輸入編號核實位置。</div> : <><div className="filters">{(['all','toilet','aed','water','fire_station','ambulance_station','police','hospital','distance_post'] as const).map(t=><button className={facilityType===t?'active':''} key={t} onClick={()=>setFacilityType(t)}>{t==='all'?'全部':facilityName[t]}</button>)}</div><p className="near-note">位置基準：{referencePoint?.label}。以下為直線距離，不代表實際可步行距離。資料版本：{facilityDb?.version}</p><div className="near-list">{nearby.map(x=><article key={x.id}><div><span className="source">{facilityName[x.type]} · {x.source}</span><h3>{x.name}</h3>{x.address&&<p>{x.address}</p>}{x.hours&&<small>開放時間：{x.hours}</small>}{x.detail&&<small>{x.detail}</small>}{x.phone&&<a className="facility-phone" href={`tel:${x.phone.replace(/[^\d+]/g,'')}`}>電話：{x.phone}</a>}</div><div className="distance"><strong>{formatDistance(x.distance)}</strong><span>{x.direction} · {Math.round(x.bearing)}°</span></div></article>)}</div></>}</section>}
+      {tab === 'nearby' && <section><span className="eyebrow">NEARBY</span><h2>附近資訊</h2>{!referencePoint ? <div className="empty">先到「定位」取得目前位置，才能計算附近設施。</div> : facilityLoading ? <div className="empty">正在載入內置設施資料…</div> : facilityError ? <div className="empty">{facilityError}，因此暫時未能列出附近設施。這不代表附近沒有 AED、公廁或救援服務；如果你能看到現場的標距柱或燈柱編號，仍可到「定位」頁輸入編號核實位置。</div> : <><div className="filters">{(['all','toilet','aed','water','fire_station','ambulance_station','police','hospital','distance_post'] as const).map(t=><button className={facilityType===t?'active':''} key={t} onClick={()=>setFacilityType(t)}>{t==='all'?'全部':facilityName[t]}</button>)}</div><p className="near-note">位置基準：{referencePoint?.label}。以下為直線距離，不代表實際可步行距離。資料版本：{facilityDb?.version}</p><div className="near-list">{nearby.map(x=><article key={x.id}><div><span className="source">{facilityName[x.type]} · {x.source}</span><h3>{x.name}</h3>{x.address&&<p>{x.address}</p>}{x.hours&&<small>開放時間：{x.hours}</small>}{x.detail&&<small>{x.detail}</small>}{x.phone&&<a className="facility-phone" href={`tel:${x.phone.replace(/[^\d+]/g,'')}`}>電話：{x.phone}</a>}</div><div className="distance"><strong>{formatDistance(x.distance)}</strong><span>{x.direction} · {Math.round(x.bearing)}°</span><a className="maps-link" href={mapsAppLink(x.lat,x.lng,x.name)} target="_blank" rel="noreferrer">在地圖開啟</a></div></article>)}</div></>}</section>}
     </main>
     <footer><strong>Scout System</strong><br/>安全資訊只供輔助 · 遇到即時危險請致電 999／112<br/><span>© 2026 Scout System · 資料來源及地圖版權歸各官方機構所有</span></footer>
-    {sosOpen&&<div className="modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)setSosOpen(false)}}><section className="sos-panel" role="dialog" aria-modal="true" aria-labelledby="sos-title"><button className="modal-close" onClick={()=>setSosOpen(false)} aria-label="關閉">×</button><span className="eyebrow red">EMERGENCY</span><h2 id="sos-title">緊急求助</h2>{!shown?<p className="danger-message">目前沒有位置資料。致電時請描述附近地標、建築物、燈柱或標距柱編號。</p>:<><div className={`position-health ${positionAge!==null&&positionAge>300?'stale':''}`}><strong>{locked?'已鎖定裝置位置':'裝置定位位置'}</strong><span>誤差 ±{Math.round(shown.accuracy)} 米 · {(positionAge??0)<60?`${positionAge} 秒前`:`${Math.floor((positionAge??0)/60)} 分鐘前`}</span></div>{positionAge!==null&&positionAge>300&&<p className="danger-message">此位置已超過 5 分鐘，可能不是目前位置。請重新定位或向接線員說明。</p>}{shown.accuracy>100&&<p className="danger-message">裝置回報誤差超過 100 米。請同時向接線員提供附近地標、燈柱或標距柱編號。</p>}</>}<pre className="report">{report}</pre>{copyState&&<p className="copy-state">{copyState}</p>}<div className="emergency-actions"><a className="call" href="tel:999">致電 999</a><a className="call secondary-call" href="tel:112">致電 112</a><button onClick={copyReport}>複製報位</button><button onClick={()=>navigator.share?.({title:'緊急報位資料',text:report}).catch(()=>{})}>分享報位</button></div><p className="sos-note">112 會嘗試透過可用流動網絡接駁緊急服務；能否接通視乎現場網絡。App 不會自動替你致電。</p></section></div>}
+    {sosOpen&&<div className="modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)setSosOpen(false)}}><section className="sos-panel" role="dialog" aria-modal="true" aria-labelledby="sos-title"><button className="modal-close" onClick={()=>setSosOpen(false)} aria-label="關閉">×</button><span className="eyebrow red">EMERGENCY</span><h2 id="sos-title">緊急求助</h2>{!shown?<p className="danger-message">目前沒有位置資料。致電時請描述附近地標、建築物、燈柱或標距柱編號。</p>:<><div className={`position-health ${positionAge!==null&&positionAge>300?'stale':''}`}><strong>{locked?'已鎖定裝置位置':'裝置定位位置'}</strong><span>誤差 ±{Math.round(shown.accuracy)} 米 · {(positionAge??0)<60?`${positionAge} 秒前`:`${Math.floor((positionAge??0)/60)} 分鐘前`}</span></div>{positionAge!==null&&positionAge>300&&<p className="danger-message">此位置已超過 5 分鐘，可能不是目前位置。請重新定位或向接線員說明。</p>}{shown.accuracy>100&&<p className="danger-message">裝置回報誤差超過 100 米。請同時向接線員提供附近地標、燈柱或標距柱編號。</p>}</>}<pre className="report">{report}</pre>{copyState&&<p className="copy-state">{copyState}</p>}<div className="emergency-actions"><a className="call" href="tel:999">致電 999</a><a className="call secondary-call" href="tel:112">致電 112</a><button onClick={copyReport}>複製報位</button><button onClick={()=>shareOrCopy(report,'緊急報位資料')}>分享報位</button></div><p className="sos-note">112 會嘗試透過可用流動網絡接駁緊急服務；能否接通視乎現場網絡。App 不會自動替你致電。</p></section></div>}
   </div>;
 }
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
