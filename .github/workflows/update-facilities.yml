@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '23 19 * * 1'
+  push:
+    branches: ['arena/01a0f182-whereami']
 
 permissions:
   contents: write
