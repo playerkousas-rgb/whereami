@@ -1,0 +1,13 @@
+{
+  "cleanUrls": true,
+  "headers": [
+    {"source":"/(.*)","headers":[{"key":"X-Content-Type-Options","value":"nosniff"},{"key":"Referrer-Policy","value":"no-referrer"},{"key":"Permissions-Policy","value":"geolocation=(self)"}]},
+    {"source":"/sw.js","headers":[{"key":"Cache-Control","value":"no-cache"}]}
+  ],
+  "rewrites": [
+    {"source":"/api/live/traffic","destination":"https://resource.data.one.gov.hk/td/en/specialtrafficnews.xml"},
+    {"source":"/api/live/weather","destination":"https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=warnsum&lang=tc"},
+    {"source":"/api/live/trails","destination":"https://portal.csdi.gov.hk/csdi-webpage/file-api?dataset_id=afcd_rcd_1742550096880_1424&format=geojson&layer_name=CPISDBOCLOSED_TRAIL_IN_CP_GDB"},
+    {"source":"/api/live/facilities","destination":"https://portal.csdi.gov.hk/csdi-webpage/file-api?dataset_id=afcd_rcd_1728897009646_22480&format=geojson&layer_name=Closed_Facilities_in_Country_Parks"}
+  ]
+}
