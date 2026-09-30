@@ -47,8 +47,17 @@ def parse_geo(raw,kind,source):
   try:lat,lng=point(f)
   except ValueError:continue
   p=f.get('properties') or {}; code=pick(p,'fac_id','post_no','lamp_no','number','code','id','name')
-  name=pick(p,'name_tc','hospname','hospital_name','name_chi','chinese_name','premises_tc','name','location_tc','location') or (f'標距柱 {code}' if kind=='distance_post' and code else code) or f'{source} {i+1}'
-  out.append({'id':f'{kind}:{code or i}','type':kind,'name':name,'lat':round(lat,7),'lng':round(lng,7),'address':pick(p,'address_tc','address','location'),'phone':pick(p,'phone','tel'),'hours':pick(p,'opening','service_hour','hours'),'detail':pick(p,'floor','detail','remarks'),'source':source})
+  if kind=='distance_post':
+   # The post's own code (e.g. "M001") must be the primary, on-map identifier — never the
+   # trail/country-park name. Those loose substring matches on 'name_tc' etc. would otherwise
+   # grab TRAIL_NAME_TC ("麥理浩徑第一段") because it contains the substring "name_tc".
+   trail=pick(p,'trail_name_tc','trail_name');park=pick(p,'country_park_tc','country_park')
+   name=f'標距柱 {code}' if code else (trail or f'{source} {i+1}')
+   detail=' · '.join(x for x in (trail,park) if x)
+   out.append({'id':f'{kind}:{code or i}','type':kind,'name':name,'lat':round(lat,7),'lng':round(lng,7),'address':'','phone':'','hours':'','detail':detail,'source':source})
+   continue
+  name=pick(p,'name_tc','hospname','hospital_name','name_chi','chinese_name','premises_tc','name','location_tc','location') or code or f'{source} {i+1}'
+  out.append({'id':f'{kind}:{code or i}','type':kind,'name':name,'lat':round(lat,7),'lng':round(lng,7),'address':pick(p,'address_tc','address','addres','location'),'phone':pick(p,'phone','tel'),'hours':pick(p,'opening','service_hour','hours'),'detail':pick(p,'floor','detail','remarks'),'source':source})
  if not out:raise ValueError(f'{source}: zero valid points')
  return out
 

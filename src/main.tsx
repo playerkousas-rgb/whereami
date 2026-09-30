@@ -1,9 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { convertCoordinates, formatHkt, type ConvertedCoordinates } from './coordinates';
 import { cachedFeeds, feedTime, refreshAll, stateLabel, type FeedResult } from './liveInfo';
 import { clearFacilityUpdate, distanceMeters, facilityName, formatDistance, loadFacilities, nearestFacilities, refreshFacilities, type Facility, type FacilityDatabase, type FacilityType } from './facilities';
-import LocationMap, { FACILITY_COLORS, ALERT_COLOR } from './LocationMap';
+// Lazy-loaded: leaflet (~350kB) is only fetched once the user actually opens a map tab,
+// instead of bloating the initial JS payload for everyone. FACILITY_COLORS/ALERT_COLOR live
+// in the dependency-free ./mapStyles so the legend can render before the map chunk arrives.
+const LocationMap = lazy(() => import('./LocationMap'));
+import { FACILITY_COLORS, ALERT_COLOR } from './mapStyles';
 import { downloadLampDistrict, findLampPost, installedLampDistricts, loadLampManifest, removeLampDistrict, type LampManifest } from './lampposts';
 import { downloadRegion, MAP_REGIONS, mapInstalls, regionUrls, removeRegion, verifyRegion, checkRegionUpdate, type MapInstall } from './offlineMaps';
 import './styles.css';
@@ -128,7 +132,7 @@ function App() {
           {shown ? <><div className="latlng">{shown.coords.latitude.toFixed(6)}<br/>{shown.coords.longitude.toFixed(6)}</div><div className="accuracy">誤差半徑 ±{Math.round(shown.accuracy)} 米 · {formatHkt(shown.timestamp)}</div>{quality&&<div className={`quality ${quality.tone}`}><strong>定位品質：{quality.label}</strong><span>{quality.note}</span></div>}</> : <div className="empty">按下定位，讓裝置取得你目前的位置。GNSS 可在沒有流動數據時運作。</div>}
           <div className="locate-actions"><button className="primary" disabled={locating} onClick={locate}>{locating?'定位中…':'找出我在哪裡'}</button><button className="secondary-dark" onClick={toggleTracking}>{tracking?'停止持續定位':'持續定位'}</button></div>
         </section>
-        {mapPoint && <><LocationMap lat={mapPoint.lat} lng={mapPoint.lng} accuracy={mapPoint.accuracy} locked={!!locked} devicePosition={!!shown} landmark={shown?confirmedLandmark:null} facilities={nearby} alerts={mapAlerts}/>{(mapLegend.length>0||mapAlerts.length>0)&&<div className="map-legend"><span><i style={{background:mapPoint&&shown?(locked?'#e9a23b':'#2078d4'):'#c53d35'}}/>{shown?(locked?'已鎖定裝置位置':'裝置定位'):'已確認地標'}</span>{mapLegend.map(x=><span key={x.label}><i style={{background:x.color}}/>{x.label}</span>)}{mapAlerts.length>0&&<span><i style={{background:ALERT_COLOR}}/>封閉山徑／設施</span>}</div>}<p className="map-note">地圖上每個點都附有短標籤（例如標距柱編號、AED、廁等），方便對照現場實物；點按可查看完整名稱及詳情。網上地圖由香港地政總署按需載入，內容更新時間以官方服務為準。此畫面未標示為離線可用；只有已完成下載及驗證的地區底圖才可離線使用。</p>{shown&&<p className={`offline-coverage ${offlineCoverage.some(x=>x.ready)?'ready':'missing'}`}>{offlineCoverage.some(x=>x.ready)?`此位置已有離線底圖：${offlineCoverage.filter(x=>x.ready).map(x=>x.name).join('、')}`:'此位置未有已完成的離線底圖；失去網絡後底圖可能空白。'}</p>}</>}
+        {mapPoint && <><Suspense fallback={<div className="location-map location-map-loading" aria-label="地圖載入中">地圖載入中…</div>}><LocationMap lat={mapPoint.lat} lng={mapPoint.lng} accuracy={mapPoint.accuracy} locked={!!locked} devicePosition={!!shown} landmark={shown?confirmedLandmark:null} facilities={nearby} alerts={mapAlerts}/></Suspense>{(mapLegend.length>0||mapAlerts.length>0)&&<div className="map-legend"><span><i style={{background:mapPoint&&shown?(locked?'#e9a23b':'#2078d4'):'#c53d35'}}/>{shown?(locked?'已鎖定裝置位置':'裝置定位'):'已確認地標'}</span>{mapLegend.map(x=><span key={x.label}><i style={{background:x.color}}/>{x.label}</span>)}{mapAlerts.length>0&&<span><i style={{background:ALERT_COLOR}}/>封閉山徑／設施</span>}</div>}<p className="map-note">地圖上每個點都附有短標籤（例如標距柱編號、AED、廁等），方便對照現場實物；點按可查看完整名稱及詳情。網上地圖由香港地政總署按需載入，內容更新時間以官方服務為準。此畫面未標示為離線可用；只有已完成下載及驗證的地區底圖才可離線使用。</p>{shown&&<p className={`offline-coverage ${offlineCoverage.some(x=>x.ready)?'ready':'missing'}`}>{offlineCoverage.some(x=>x.ready)?`此位置已有離線底圖：${offlineCoverage.filter(x=>x.ready).map(x=>x.name).join('、')}`:'此位置未有已完成的離線底圖；失去網絡後底圖可能空白。'}</p>}</>}
         {shown && <section className="grid cards">
           <article><label>香港 1980 方格</label><strong>E {Math.round(shown.coords.hkE)}</strong><strong>N {Math.round(shown.coords.hkN)}</strong></article>
           <article><label>香港地圖方格 · 8 位</label><strong>{shown.coords.grid8}</strong><small>6 位：{shown.coords.grid6}</small></article>

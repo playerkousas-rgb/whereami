@@ -2,26 +2,11 @@ import { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { NearbyFacility } from './facilities';
+import { FACILITY_COLORS, ALERT_COLOR, shortLabel } from './mapStyles';
 
 interface Props { lat:number; lng:number; accuracy:number; locked:boolean; devicePosition?:boolean; landmark?:{lat:number;lng:number;name:string}|null; facilities?:NearbyFacility[]; alerts?:{title:string;detail?:string;lat?:number;lng?:number;publishedAt?:string}[]; }
 const TILE='https://mapapi.geodata.gov.hk/gs/api/v1.0.0/xyz/basemap/WGS84/{z}/{x}/{y}.png';
 const LABEL='https://mapapi.geodata.gov.hk/gs/api/v1.0.0/xyz/label/hk/tc/WGS84/{z}/{x}/{y}.png';
-// 標距柱／燈柱的名稱例如「標距柱 M047」「燈柱 CW1234A」，取最後一節作為現場柱號標籤，
-// 讓使用者可直接對照現場實物編號，而不是只看到一個沒有意義的顏色點。
-const extractCode=(name:string):string=>{const parts=name.trim().split(/\s+/);const last=parts[parts.length-1];return last&&last!==name?last:'';};
-export const FACILITY_COLORS:Record<string,string>={aed:'#c93434',toilet:'#5577b8',water:'#168b9b',distance_post:'#7652a8',fire_station:'#d65a31',ambulance_station:'#d63568',police:'#334e8a',hospital:'#bd3c72',other:'#69756e'};
-export const ALERT_COLOR='#d26b2f';
-const shortLabel:Record<string,(f:{type:string;name:string})=>string>={
- distance_post:f=>extractCode(f.name)||'柱',
- other:f=>extractCode(f.name)||'？',
- aed:()=>'AED',
- toilet:()=>'廁',
- water:()=>'水',
- fire_station:()=>'消',
- ambulance_station:()=>'救',
- police:()=>'警',
- hospital:()=>'急',
-};
 export default function LocationMap({lat,lng,accuracy,locked,devicePosition=true,landmark,facilities=[],alerts=[]}:Props){
  const host=useRef<HTMLDivElement>(null), map=useRef<L.Map|null>(null), marker=useRef<L.CircleMarker|null>(null), circle=useRef<L.Circle|null>(null), landmarkMarker=useRef<L.CircleMarker|null>(null), link=useRef<L.Polyline|null>(null), facilityLayer=useRef<L.LayerGroup|null>(null);
  useEffect(()=>{if(!host.current||map.current)return;const m=L.map(host.current,{zoomControl:true,attributionControl:true}).setView([lat,lng],16);L.tileLayer(TILE,{minZoom:10,maxZoom:20,attribution:'Map from Lands Department'}).addTo(m);L.tileLayer(LABEL,{minZoom:10,maxZoom:20,pane:'overlayPane'}).addTo(m);map.current=m;setTimeout(()=>m.invalidateSize(),0);return()=>{m.remove();map.current=null}},[]);
