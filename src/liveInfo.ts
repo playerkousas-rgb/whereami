@@ -5,6 +5,7 @@ export interface FeedItem { title:string; detail?:string; publishedAt?:string; l
 export interface FeedResult { id: string; name: string; source: string; state: FeedState; count?: number; fetchedAt?: string; publishedAt?: string; message: string; items?:FeedItem[]; }
 
 const feeds = [
+  { id: 'weather-now', name: '現在天氣', source: '香港天文台', url: '/api/live/weather-now', kind: 'weather-now' },
   { id: 'traffic', name: '封路及交通事故', source: '運輸署', url: '/api/live/traffic', kind: 'xml' },
   { id: 'weather', name: '天氣警告', source: '香港天文台', url: '/api/live/weather', kind: 'json' },
   { id: 'trails', name: '封閉山徑', source: '漁農自然護理署／CSDI', url: '/api/live/trails', kind: 'geojson' },
@@ -23,7 +24,25 @@ async function fetchOne(feed: typeof feeds[number]): Promise<FeedResult> {
     const text = await response.text();
     if (!text.trim()) throw new Error('空白回應');
     let count = 0; let items:FeedItem[]=[];
-    if (feed.kind === 'json') {
+    if (feed.kind === 'weather-now') {
+      const data = JSON.parse(text); if (!data || typeof data !== 'object') throw new Error('JSON 結構不符');
+      const publishedAt = typeof data.updateTime === 'string' ? data.updateTime : undefined;
+      const temps:Array<{place:string;value:number;unit:string}> = Array.isArray(data.temperature?.data) ? data.temperature.data : [];
+      const pick = (place:string) => temps.find(t => t.place === place);
+      const hko = pick('香港天文台') || temps[0];
+      const spread = temps.length ? `${Math.min(...temps.map(t=>t.value))}–${Math.max(...temps.map(t=>t.value))}°C（全港${temps.length}個測站）` : undefined;
+      if (hko) items.push({ title: '現時氣溫', detail: `${hko.place} ${hko.value}°C${spread ? `；${spread}` : ''}`, publishedAt: data.temperature?.recordTime || publishedAt });
+      const hum = Array.isArray(data.humidity?.data) ? data.humidity.data[0] : undefined;
+      if (hum) items.push({ title: '相對濕度', detail: `${hum.place} ${hum.value}%`, publishedAt: data.humidity?.recordTime || publishedAt });
+      const uv = Array.isArray(data.uvindex?.data) ? data.uvindex.data[0] : undefined;
+      if (uv) items.push({ title: '紫外線指數', detail: `${uv.place} ${uv.value}（${uv.desc}）`, publishedAt });
+      const rain = Array.isArray(data.rainfall?.data) ? data.rainfall.data.filter((r:{max:number})=>r.max>0) : [];
+      items.push({ title: '雨量', detail: rain.length ? rain.map((r:{place:string;max:number;unit:string})=>`${r.place} ${r.max}${r.unit}`).join('、') : '過去一小時各區雨量錄得 0（官方沒有提供雨量不代表沒有降雨風險）', publishedAt: data.rainfall?.endTime || publishedAt });
+      const warnings:string[] = Array.isArray(data.warningMessage) ? data.warningMessage.filter((w:unknown)=>typeof w === 'string' && w.trim()) : [];
+      if (warnings.length) warnings.forEach(w => items.push({ title: '天氣提示', detail: w, publishedAt }));
+      else items.push({ title: '天氣提示', detail: '官方目前沒有發出特別天氣提示', publishedAt });
+      count = items.length;
+    } else if (feed.kind === 'json') {
       const data = JSON.parse(text); if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('JSON 結構不符');
       items=Object.entries(data).map(([key,value])=>{const v=value as Record<string,unknown>;return {title:String(v?.name||v?.warningStatementCode||key),detail:typeof v?.actionCode==='string'?v.actionCode:undefined,publishedAt:typeof v?.updateTime==='string'?v.updateTime:undefined}});count=items.length;
     } else if (feed.kind === 'geojson') {

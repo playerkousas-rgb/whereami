@@ -15,7 +15,20 @@ const statusKey='whereami-offline-maps';
 export interface MapInstall {id:string;name:string;installedAt:string;tiles:number;minZoom:number;maxZoom:number;complete:boolean}
 export function mapInstalls():MapInstall[]{try{return JSON.parse(localStorage.getItem(statusKey)||'[]')}catch{return[]}}
 const save=(list:MapInstall[])=>localStorage.setItem(statusKey,JSON.stringify(list));
-export async function downloadRegion(region:MapRegion,onProgress:(done:number,total:number)=>void,signal?:AbortSignal){const urls=regionUrls(region),cache=await caches.open(`whereami-map-${region.id}-v1`);let done=0;const queue=[...urls];const worker=async()=>{while(queue.length){if(signal?.aborted)throw new DOMException('下載已取消','AbortError');const url=queue.shift()!;if(!await cache.match(url)){const response=await fetch(url,{signal});if(!response.ok)throw new Error(`地圖圖磚 HTTP ${response.status}`);await cache.put(url,response)}done++;onProgress(done,urls.length)}};try{await Promise.all(Array.from({length:4},worker));const list=mapInstalls().filter(x=>x.id!==region.id);list.push({id:region.id,name:region.name,installedAt:new Date().toISOString(),tiles:urls.length,minZoom:10,maxZoom:16,complete:true});save(list)}catch(e){await caches.delete(`whereami-map-${region.id}-v1`);save(mapInstalls().filter(x=>x.id!==region.id));throw e}}
+// A single flaky tile among thousands (very plausible on the patchy trailside connections this
+// offline-map feature exists for) used to abort and wipe the ENTIRE region download. Retry each
+// tile a few times before giving up on it, so brief blips don't escalate into a whole-batch failure.
+async function fetchTileWithRetry(url:string,signal?:AbortSignal,attempts=3):Promise<Response>{
+  let lastErr:unknown;
+  for(let i=0;i<attempts;i++){
+    if(signal?.aborted)throw new DOMException('下載已取消','AbortError');
+    try{const response=await fetch(url,{signal});if(!response.ok)throw new Error(`地圖圖磚 HTTP ${response.status}`);return response}
+    catch(e){if(e instanceof DOMException&&e.name==='AbortError')throw e;lastErr=e;if(i<attempts-1)await new Promise(r=>setTimeout(r,400*(i+1)))}
+  }
+  throw lastErr instanceof Error?lastErr:new Error('圖磚下載失敗');
+}
+export async function downloadRegion(region:MapRegion,onProgress:(done:number,total:number)=>void,signal?:AbortSignal){const urls=regionUrls(region),cache=await caches.open(`whereami-map-${region.id}-v1`);let done=0;const queue=[...urls];const worker=async()=>{while(queue.length){if(signal?.aborted)throw new DOMException('下載已取消','AbortError');const url=queue.shift()!;if(!await cache.match(url)){const response=await fetchTileWithRetry(url,signal);await cache.put(url,response)}done++;onProgress(done,urls.length)}};try{await Promise.all(Array.from({length:4},worker));const list=mapInstalls().filter(x=>x.id!==region.id);list.push({id:region.id,name:region.name,installedAt:new Date().toISOString(),tiles:urls.length,minZoom:10,maxZoom:16,complete:true});save(list)}catch(e){if(e instanceof DOMException&&e.name==='AbortError'){await caches.delete(`whereami-map-${region.id}-v1`);save(mapInstalls().filter(x=>x.id!==region.id))}throw e}}
+
 export async function checkRegionUpdate(region:MapRegion){
  const urls=regionUrls(region); const cache=await caches.open(`whereami-map-${region.id}-v1`); const sample=urls[Math.floor(urls.length/2)]; const cached=await cache.match(sample); if(!cached) return {available:false,updated:true,detail:'本機沒有完整快取'};
  try { const remote=await fetch(sample,{method:'HEAD',cache:'no-store'}); if(!remote.ok) return {available:false,updated:false,detail:`官方服務回應 HTTP ${remote.status}`}; const oldDate=cached.headers.get('last-modified'),newDate=remote.headers.get('last-modified'); if(oldDate&&newDate) return {available:true,updated:oldDate!==newDate,detail:`官方更新日期：${newDate}`};

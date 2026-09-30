@@ -47,22 +47,37 @@ def parse_geo(raw,kind,source):
   try:lat,lng=point(f)
   except ValueError:continue
   p=f.get('properties') or {}; code=pick(p,'fac_id','post_no','lamp_no','number','code','id','name')
-  name=pick(p,'name_tc','hospname','hospital_name','name_chi','chinese_name','premises_tc','name','location_tc','location') or (f'標距柱 {code}' if kind=='distance_post' and code else code) or f'{source} {i+1}'
-  out.append({'id':f'{kind}:{code or i}','type':kind,'name':name,'lat':round(lat,7),'lng':round(lng,7),'address':pick(p,'address_tc','address','location'),'phone':pick(p,'phone','tel'),'hours':pick(p,'opening','service_hour','hours'),'detail':pick(p,'floor','detail','remarks'),'source':source})
+  if kind=='distance_post':
+   # The post's own code (e.g. "M001") must be the primary, on-map identifier — never the
+   # trail/country-park name. Those loose substring matches on 'name_tc' etc. would otherwise
+   # grab TRAIL_NAME_TC ("麥理浩徑第一段") because it contains the substring "name_tc".
+   trail=pick(p,'trail_name_tc','trail_name');park=pick(p,'country_park_tc','country_park')
+   name=f'標距柱 {code}' if code else (trail or f'{source} {i+1}')
+   detail=' · '.join(x for x in (trail,park) if x)
+   out.append({'id':f'{kind}:{code or i}','type':kind,'name':name,'lat':round(lat,7),'lng':round(lng,7),'address':'','phone':'','hours':'','detail':detail,'source':source})
+   continue
+  name=pick(p,'name_tc','hospname','hospital_name','name_chi','chinese_name','premises_tc','name','location_tc','location') or code or f'{source} {i+1}'
+  out.append({'id':f'{kind}:{code or i}','type':kind,'name':name,'lat':round(lat,7),'lng':round(lng,7),'address':pick(p,'address_tc','address','addres','location'),'phone':pick(p,'phone','tel'),'hours':pick(p,'opening','service_hour','hours'),'detail':pick(p,'floor','detail','remarks'),'source':source})
  if not out:raise ValueError(f'{source}: zero valid points')
  return out
 
 def parse_fehd(raw):
+ # Field names per https://www.fehd.gov.hk/datagovhk/data_dictionary/tc_chi/datadict_locations.pdf:
+ # mapID, districtID, map_type, name_c, address_c, contact1, contact2, fax, openHr_c, map_coordinate, updateDate, remarks_c
  root=ET.fromstring(raw);out=[]
  for i,node in enumerate(root.iter()):
   vals={c.tag.split('}')[-1].lower():(c.text or '').strip() for c in list(node)}
-  typ=' '.join([vals.get('type',''),vals.get('category','')]).lower()
-  if not any(x in typ for x in ('toilet','公廁','便所','aqua privy','流動廁所')):continue
+  if not vals:continue
+  typ=vals.get('map_type','').lower()
+  if not any(x in typ for x in ('toilet','\u516c\u5ec1','\u4fbf\u6240','aqua privy','\u6d41\u52d5\u5ec1\u6240')):continue
   coord=vals.get('map_coordinate','').replace(' ','').split(',')
   try:lat,lng=map(float,coord[:2])
   except:continue
   if not (22<=lat<=23 and 113<=lng<=115):continue
-  out.append({'id':f'toilet:{vals.get("id",i)}','type':'toilet','name':vals.get('name_tc') or vals.get('name') or '公廁','lat':round(lat,7),'lng':round(lng,7),'address':vals.get('address_tc') or vals.get('address',''),'phone':vals.get('tel',''),'hours':vals.get('opening_hours_tc') or vals.get('opening_hours',''),'detail':vals.get('remarks_tc') or vals.get('remarks',''),'source':'食環署'})
+  phone=', '.join([p for p in (vals.get('contact1',''),vals.get('contact2','')) if p and p!='N/A'])
+  remarks=vals.get('remarks_c','')
+  if remarks=='N/A':remarks=''
+  out.append({'id':f'toilet:{vals.get("mapid",i)}','type':'toilet','name':vals.get('name_c') or '\u516c\u5ec1','lat':round(lat,7),'lng':round(lng,7),'address':vals.get('address_c',''),'phone':phone,'hours':vals.get('openhr_c',''),'detail':remarks,'source':'\u98df\u74b0\u7f72'})
  if not out:raise ValueError('FEHD: zero toilets; XML schema may have changed')
  return out
 

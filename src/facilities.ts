@@ -15,9 +15,13 @@ const LIVE_SOURCES = [
 let memo: FacilityDatabase | null = null;
 const dbOpen=()=>new Promise<IDBDatabase>((resolve,reject)=>{const r=indexedDB.open('whereami-data',1);r.onupgradeneeded=()=>r.result.createObjectStore('datasets');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)});
 async function stored():Promise<FacilityDatabase|null>{try{const db=await dbOpen();return await new Promise((resolve,reject)=>{const r=db.transaction('datasets').objectStore('datasets').get('facilities');r.onsuccess=()=>resolve(r.result||null);r.onerror=()=>reject(r.error)})}catch{return null}}
+// The bundled public/data/facilities.json always carries a build-time generatedAt, so callers
+// cannot tell "已用官方即時資料更新過" from "只是內置版本" by checking generatedAt alone. Expose this
+// explicitly so the UI only offers "還原內置版本" when there is actually a stored override to undo.
+export async function hasFacilityOverride():Promise<boolean>{return (await stored())!=null}
 async function store(data:FacilityDatabase){const db=await dbOpen();await new Promise<void>((resolve,reject)=>{const tx=db.transaction('datasets','readwrite');tx.objectStore('datasets').put(data,'facilities');tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error)})}
 const value=(p:Record<string,unknown>,keys:string[])=>{for(const wanted of keys){const hit=Object.entries(p).find(([k,v])=>k.toLowerCase().includes(wanted)&&v!=null&&v!=='');if(hit)return String(hit[1]).trim()}return ''};
-function parseGeoJson(data:unknown,type:FacilityType,source:string):Facility[]{const d=data as {type?:string;features?:Array<{geometry?:{type?:string;coordinates?:unknown[]};properties?:Record<string,unknown>}>};if(d?.type!=='FeatureCollection'||!Array.isArray(d.features))throw new Error(`${source}資料格式異常`);const out:Facility[]=[];d.features.forEach((f,i)=>{const c=f.geometry?.coordinates;if(f.geometry?.type!=='Point'||!Array.isArray(c))return;const lng=Number(c[0]),lat=Number(c[1]);if(!(lat>=22&&lat<=23&&lng>=113&&lng<=115))return;const p=f.properties||{};const code=value(p,['fac_id','post_no','number','code','objectid','id']);const rawName=value(p,['name_tc','hospname','hospital_name','chinese_name','location_tc','premises_tc','name','trail_name_tc']);const name=type==='distance_post'&&code?`標距柱 ${code}`:(rawName||code||`${source} ${i+1}`);out.push({id:`${type}:${code||i}`,type,name,lat,lng,address:value(p,['address_tc','address','location']),phone:value(p,['phone','tel']),hours:value(p,['service_hour','opening','hours']),detail:value(p,['waiting','remarks_tc','detail','floor']),source})});if(!out.length)throw new Error(`${source}沒有有效香港座標`);return out}
+function parseGeoJson(data:unknown,type:FacilityType,source:string):Facility[]{const d=data as {type?:string;features?:Array<{geometry?:{type?:string;coordinates?:unknown[]};properties?:Record<string,unknown>}>};if(d?.type!=='FeatureCollection'||!Array.isArray(d.features))throw new Error(`${source}資料格式異常`);const out:Facility[]=[];d.features.forEach((f,i)=>{const c=f.geometry?.coordinates;if(f.geometry?.type!=='Point'||!Array.isArray(c))return;const lng=Number(c[0]),lat=Number(c[1]);if(!(lat>=22&&lat<=23&&lng>=113&&lng<=115))return;const p=f.properties||{};const code=value(p,['fac_id','post_no','number','code','objectid','id']);const rawName=value(p,['name_tc','hospname','hospital_name','chinese_name','location_tc','premises_tc','name','trail_name_tc']);const name=type==='distance_post'&&code?`標距柱 ${code}`:(rawName||code||`${source} ${i+1}`);out.push({id:`${type}:${code||i}`,type,name,lat,lng,address:value(p,['address_tc','address','addres','location']),phone:value(p,['phone','tel']),hours:value(p,['service_hour','opening','hours']),detail:value(p,['waiting','remarks_tc','detail','floor']),source})});if(!out.length)throw new Error(`${source}沒有有效香港座標`);return out}
 export async function loadFacilities(): Promise<FacilityDatabase> {
   if (memo) return memo;
   const saved=await stored();if(saved&&Array.isArray(saved.items)){memo=saved;return saved}
@@ -37,3 +41,12 @@ const dirs=['北','東北','東','東南','南','西南','西','西北'];
 export function nearestFacilities(db:FacilityDatabase,lat:number,lng:number,type:'all'|FacilityType='all',limit=30):NearbyFacility[] { return db.items.filter(x=>type==='all'||x.type===type).map(x=>{const bearing=bearingDegrees(lat,lng,x.lat,x.lng);return {...x,distance:distanceMeters(lat,lng,x.lat,x.lng),bearing,direction:dirs[Math.round(bearing/45)%8]};}).sort((a,b)=>a.distance-b.distance).slice(0,limit); }
 export const facilityName:Record<FacilityType,string>={toilet:'公廁',aed:'AED',water:'加水站',distance_post:'標距柱',fire_station:'消防局',ambulance_station:'救護站',police:'警署',hospital:'醫院／急症室',other:'其他設施'};
 export const formatDistance=(m:number)=>m<1000?`${Math.round(m)} 米`:`${(m/1000).toFixed(1)} 公里`;
+// Some phone Chinese input methods default to full-width (全形) letters/digits. Without this, a
+// physically correct code typed in full-width form (e.g. "Ｍ０４７") would silently fail to match the
+// half-width codes used by every official dataset — wrongly telling a stressed user "not found" for
+// a code that is actually correct.
+export const normalizeCode = (s: string): string => s
+  .replace(/[\uFF01-\uFF5E]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+  .replace(/\u3000/g, ' ')
+  .trim().toUpperCase().replace(/\s+/g, '');
+

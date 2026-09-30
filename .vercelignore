@@ -1,0 +1,25 @@
+# Keep the Vercel deployment upload small. Do NOT add anything the build needs:
+# src/, public/, index.html, sw.js, package*.json, tsconfig*.json, vite.config.ts,
+# and vercel.json itself must always stay reachable by `npm run build`.
+
+# CI-only assets — not read by `npm run build`.
+.github
+scripts
+
+# Docs kept for contributors, not needed at runtime or build time.
+readme
+docs
+*.md
+
+# Generic accident/junk patterns — should never be present, ignored defensively.
+*.bak
+*.tmp
+*.old
+*.log
+uploads
+.DS_Store
+
+# Already excluded from git, but ignored again in case they ever exist locally.
+node_modules
+dist
+.git
