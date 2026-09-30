@@ -194,6 +194,28 @@ function App() {
   const mapLegend = useMemo(() => { const types=[...new Set(mapFacilities.slice(0,50).map(x=>x.type))]; return types.map(t=>({label:facilityName[t],color:FACILITY_COLORS[t]||FACILITY_COLORS.other})); }, [mapFacilities]);
   const offlineCoverage=shown?MAP_REGIONS.filter(r=>shown.coords.latitude>=r.bounds[0]&&shown.coords.latitude<=r.bounds[2]&&shown.coords.longitude>=r.bounds[1]&&shown.coords.longitude<=r.bounds[3]).map(r=>({name:r.name,ready:maps.some(x=>x.id===r.id&&x.complete)})):[];
   const quality = shown ? (shown.accuracy <= 20 ? {label:'較佳',tone:'good',note:'誤差細，準'} : shown.accuracy <= 100 ? {label:'一般',tone:'medium',note:'去開揚啲嘅地方等下會準啲'} : {label:'較差',tone:'poor',note:'誤差好大，唔好淨係靠呢個位'}) : null;
+  const weatherNowFeed = feeds.find(f => f.id === 'weather-now');
+  const weatherWarnFeed = feeds.find(f => f.id === 'weather');
+  const trailsFeed = feeds.find(f => f.id === 'trails');
+  const facilitiesFeed = feeds.find(f => f.id === 'facilities');
+  const trafficFeed = feeds.find(f => f.id === 'traffic');
+
+  const activeWarnings = useMemo(() => {
+    return (weatherWarnFeed?.items || []).filter(i => !i.detail?.includes('已取消') && i.statusBadge !== '已取消');
+  }, [weatherWarnFeed]);
+
+  const closedTrails = useMemo(() => {
+    return trailsFeed?.items || [];
+  }, [trailsFeed]);
+
+  const closedFacilities = useMemo(() => {
+    return facilitiesFeed?.items || [];
+  }, [facilitiesFeed]);
+
+  const trafficIncidents = useMemo(() => {
+    return trafficFeed?.items || [];
+  }, [trafficFeed]);
+
   const preflight=[
     {label:'目前網絡',ok:online,detail:online?'已連線，可刷新即時資料':'裝置離線；即時資料不能更新'},
     {label:'定位權限',ok:geoPermission==='granted'||!!shown,detail:geoPermission==='denied'?'已拒絕，請到系統設定開啟':geoPermission==='prompt'?'尚未授權，請先按定位':geoPermission==='unsupported'?'瀏覽器未能查詢權限狀態':'已允許'},
@@ -228,7 +250,134 @@ function App() {
         <section className="landmark-card"><span className="eyebrow">KNOWN LANDMARK</span><h2>用眼前柱號核實位置</h2><p>輸入柱上面嘅完整編號</p><div className="landmark-search"><input value={landmarkQuery} onChange={e=>setLandmarkQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')confirmLandmark()}} placeholder="例如 M047"/><button onClick={confirmLandmark}>核對</button></div>{landmarkMessage&&<p className={confirmedLandmark?'landmark-ok':'landmark-error'}>{landmarkMessage}</p>}{confirmedLandmark&&confirmedCoords&&<div className="confirmed-landmark"><strong>現在位置參考：{confirmedLandmark.name}</strong><span>WGS84　{confirmedLandmark.lat.toFixed(6)}, {confirmedLandmark.lng.toFixed(6)}</span><span>HK1980　E {Math.round(confirmedCoords.hkE)}　N {Math.round(confirmedCoords.hkN)}</span><span>方格　{confirmedCoords.grid8}</span><small>🔴 已確認地標　🔵 裝置位置</small><button onClick={()=>{setConfirmedLandmark(null);setLandmarkMessage('')}}>取消確認</button></div>}</section>
       </>}
 
-      {tab === 'prepare' && <section><div className="section-head"><div><span className="eyebrow">LIVE SAFETY DATA</span><h2>出發前即時資訊</h2></div><button className="primary compact" disabled={refreshing||!online} onClick={refresh}>{refreshing?'更新中…':online?'一鍵刷新':'目前離線'}</button></div><div className="preflight"><h3>出發前檢查</h3>{preflight.map(x=><div key={x.label} className={x.ok?'pass':'attention'}><span>{x.ok?'✓':'!'}</span><div><strong>{x.label}</strong><small>{x.detail}</small></div></div>)}</div><p className="warning">更新唔到唔代表冇警告，舊資料會留返做參考</p><div className="feed-list">{feeds.map(f=><article key={f.id} className={`feed ${f.state}`}><div><span className="source">{f.source}</span><h3>{f.name}</h3><p>{f.message}</p><small>{f.state==='fresh'?'目前快照抓取時間':'過往快取抓取時間'}：{feedTime(f)}{f.state==='fresh' && f.items?.some(i=>i.publishedAt && Date.now()-Date.parse(i.publishedAt)>90*24*60*60*1000) ? ' · 部分消息較舊' : ''}</small>{f.items&&f.items.length>0&&<details className={`feed-details ${f.state==='cached'?'past':''}`}><summary>{f.state==='cached'?`過往消息快取（${f.items.length} 項，非目前狀態）`:`查看目前 ${f.items.length} 項資料`}</summary>{f.state==='cached'&&<p className="past-warning">呢個係舊快取，得返冇網先顯示</p>}{f.items.map((item,i)=><div className="feed-item" key={i}><strong>{item.title}</strong>{item.detail&&<p>{item.detail}</p>}{item.publishedAt?<small>官方時間：{item.publishedAt}</small>:<small>官方冇提供時間</small>}</div>)}</details>}</div><span className="badge">{stateLabel(f)}</span></article>)}</div></section>}
+      {tab === 'prepare' && (
+        <section>
+          <div className="section-head">
+            <div>
+              <span className="eyebrow">LIVE SAFETY DATA</span>
+              <h2>出發前即時資訊</h2>
+            </div>
+            <button className="primary compact" disabled={refreshing || !online} onClick={refresh}>
+              {refreshing ? '更新中…' : online ? '一鍵刷新' : '目前離線'}
+            </button>
+          </div>
+
+          <div className="safety-briefing">
+            <h3>🚨 出發前安全重點指引</h3>
+            <div className="briefing-grid">
+              <div className={`briefing-card ${closedTrails.length ? 'danger' : trailsFeed?.state === 'fresh' ? 'good' : 'warning'}`}>
+                <strong>{closedTrails.length ? `🚨 ${closedTrails.length} 條行山徑封閉／改道` : trailsFeed?.state === 'fresh' ? '🟢 行山徑未有封閉報告' : '⚪ 山徑狀況待更新'}</strong>
+                <p>
+                  {closedTrails.length
+                    ? `包括：${closedTrails.slice(0, 3).map(t => t.title).join('、')}${closedTrails.length > 3 ? ` 等共 ${closedTrails.length} 處` : ''}。出發前請確認行程避開受阻路段。`
+                    : trailsFeed?.state === 'fresh'
+                    ? '漁護署目前沒有發布行山徑暫停開放消息。'
+                    : '請按右上角刷新以取得漁護署最新路況。'}
+                </p>
+              </div>
+
+              <div className={`briefing-card ${activeWarnings.length ? 'danger' : weatherNowFeed?.items?.length ? 'good' : 'warning'}`}>
+                <strong>{activeWarnings.length ? `⚠️ 天氣警告生效中（${activeWarnings.length} 項）` : weatherNowFeed?.items?.length ? '🌤️ 天氣狀況良好' : '⚪ 天氣資訊待更新'}</strong>
+                <p>
+                  {activeWarnings.length
+                    ? activeWarnings.map(w => w.title).join('、') + '。請注意戶外天氣突變與防曬防雨。'
+                    : weatherNowFeed?.items?.find(i => i.title === '現時氣溫')?.detail || '天文台目前未有發出暴雨、酷熱或雷暴警告。'}
+                </p>
+              </div>
+
+              <div className={`briefing-card ${closedFacilities.length ? 'warning' : facilitiesFeed?.state === 'fresh' ? 'good' : 'warning'}`}>
+                <strong>{closedFacilities.length ? `💧 ${closedFacilities.length} 個郊野設施／加水點關閉` : facilitiesFeed?.state === 'fresh' ? '🟢 郊野主要設施正常開放' : '⚪ 設施狀況待更新'}</strong>
+                <p>
+                  {closedFacilities.length
+                    ? '部分郊野公廁、涼亭或加水站暫停開放，請勿依賴現場補水，自備足量飲用水。'
+                    : '未接獲郊野公園設施臨時暫停開放通報。'}
+                </p>
+              </div>
+
+              <div className={`briefing-card ${trafficIncidents.length ? 'warning' : trafficFeed?.state === 'fresh' ? 'good' : 'warning'}`}>
+                <strong>{trafficIncidents.length ? `🚗 全港共 ${trafficIncidents.length} 宗特別交通消息` : trafficFeed?.state === 'fresh' ? '🟢 全港主要道路順暢' : '⚪ 交通消息待更新'}</strong>
+                <p>
+                  {trafficIncidents.length
+                    ? '全港有道路事故或改道措施；出發前往登山口前請留意接駁巴士班次。'
+                    : '運輸署目前未有發布重大特別交通消息。'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="preflight">
+            <h3>出發前系統檢查</h3>
+            {preflight.map(x => (
+              <div key={x.label} className={x.ok ? 'pass' : 'attention'}>
+                <span>{x.ok ? '✓' : '!'}</span>
+                <div>
+                  <strong>{x.label}</strong>
+                  <small>{x.detail}</small>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <p className="warning">更新失敗不代表沒有警告，舊資料會保留作參考；遇到突發情況請依現場指示。</p>
+
+          <div className="feed-list">
+            {feeds.map(f => (
+              <article key={f.id} className={`feed ${f.state}`}>
+                <div>
+                  <span className="source">{f.source}</span>
+                  <h3>{f.name}</h3>
+                  <p>{f.message}</p>
+                  <small>
+                    {f.state === 'fresh' ? '目前快照抓取時間' : '過往快取抓取時間'}：{feedTime(f)}
+                    {f.state === 'fresh' && f.items?.some(i => i.publishedAt && Date.now() - Date.parse(i.publishedAt) > 90 * 24 * 60 * 60 * 1000)
+                      ? ' · 部分消息為長期生效'
+                      : ''}
+                  </small>
+                  {f.items && f.items.length > 0 && (
+                    <details className={`feed-details ${f.state === 'cached' ? 'past' : ''}`}>
+                      <summary>
+                        {f.state === 'cached'
+                          ? `過往消息快取（${f.items.length} 項，非目前狀態）`
+                          : `展開查看全部 ${f.items.length} 項詳細資料`}
+                      </summary>
+                      {f.state === 'cached' && <p className="past-warning">此為最後一次成功取得之舊快取，僅於無網絡時供參考</p>}
+                      {f.items.map((item, i) => {
+                        const isClosed = item.detail?.includes('封閉') || item.title.includes('封閉');
+                        const isDivert = item.detail?.includes('改道') || item.title.includes('改道');
+                        const isCancel = item.statusBadge === '已取消';
+                        const isAlert = item.statusBadge === '生效中' || item.title.includes('警告');
+                        return (
+                          <div className="feed-item" key={i}>
+                            <div className="feed-item-header">
+                              {isClosed ? (
+                                <span className="feed-tag tag-danger">封閉</span>
+                              ) : isDivert ? (
+                                <span className="feed-tag tag-warning">改道</span>
+                              ) : isAlert ? (
+                                <span className="feed-tag tag-danger">警告</span>
+                              ) : isCancel ? (
+                                <span className="feed-tag tag-info">已取消</span>
+                              ) : null}
+                              <strong>{item.title}</strong>
+                            </div>
+                            {item.detail && <p>{item.detail}</p>}
+                            {item.publishedAt ? (
+                              <small>📅 官方時間：{item.publishedAt}</small>
+                            ) : (
+                              <small>🕒 隨本次即時快照發布</small>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </details>
+                  )}
+                </div>
+                <span className="badge">{stateLabel(f)}</span>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {tab === 'download' && <section><span className="eyebrow">OFFLINE CONTENT</span><h2>離線資料</h2>{storage&&<div className="storage"><span>此網站已用空間</span><strong>{(storage.usage/1048576).toFixed(1)} MB</strong><small>瀏覽器可用配額約 {(storage.quota/1073741824).toFixed(1)} GB；實際可用量由裝置決定</small><small>儲存保留：{storagePersistent===true?'已允許':storagePersistent===false?'未允許，資料可能被瀏覽器清理':'未能確認'}</small><div className="readiness-actions"><button onClick={requestPersistentStorage}>要求保留離線資料</button><button disabled={offlineChecking} onClick={runOfflineCheck}>{offlineChecking?'檢查中…':'檢查離線完整性'}</button></div>{readiness&&<strong className="readiness-result">{readiness}</strong>}</div>}<div className="download-card ready"><div><h3>全港基本設施</h3><p>公廁、AED、消防局等設施資料，可更新到手機度</p><div className="download-actions"><button disabled={facilityUpdating} onClick={updateFacilities}>{facilityUpdating?'更新中…':'更新官方設施資料'}</button>{facilityOverridden&&<button onClick={restoreBundledFacilities}>還原內置版本</button>}</div>{facilityProgress&&<small>{facilityProgress}</small>}</div><span>{facilityDb?.items.length ? `${facilityDb.items.length.toLocaleString()} 項 · ${facilityDb.version}` : '尚未建立'}</span></div><div className="download-card map-download"><div><h3>地區離線底圖</h3><p>落地圖底圖，建議用Wi-Fi。見到「完成」先可以離線用</p><div className="district-list">{MAP_REGIONS.map(r=>{const done=maps.some(x=>x.id===r.id&&x.complete);const count=regionUrls(r).length;return <div key={r.id}><span>{r.name} · {count.toLocaleString()}圖磚</span>{mapDownloading===r.id?<button onClick={()=>mapAbort.current?.abort()}>取消</button>:<><button disabled={!!mapDownloading} onClick={async()=>{if(done){try{await removeRegion(r.id);setMaps(mapInstalls());setMapProgress(`${r.name}已刪除`)}catch(e){setMapProgress(`未能刪除${r.name}：${e instanceof Error?e.message:'未知錯誤'}`)}}else installMap(r)}}>{done?'刪除':'下載'}</button>{done&&<button className="check-update" disabled={mapChecking===r.id} onClick={()=>checkMapUpdate(r)}>{mapChecking===r.id?'檢查中…':'檢查新版'}</button>}</>}</div>})}</div>{mapProgress&&<small>{mapProgress}</small>}{Object.entries(mapUpdateStatus).map(([id,status])=>{const r=MAP_REGIONS.find(x=>x.id===id);return r&&status?<small key={id} className="map-update-status">{r.name}：{status}</small>:null})}</div><span>{maps.length}區已下載</span></div><div className="download-card lamp-download"><div><h3>地區燈柱</h3><p>落嚟先可以核對燈柱編號</p>{lampManifest?.districts.length?<div className="district-list">{lampManifest.districts.map(d=>{const done=installedLamps.includes(d.id);return <div key={d.id}><span>{d.name} · {d.count.toLocaleString()}支 · {(d.bytes/1048576).toFixed(1)} MB</span><button disabled={!!lampBusy} onClick={async()=>{setLampBusy(d.id);try{if(done){await removeLampDistrict(d.id)}else{await downloadLampDistrict(d,setLampProgress)}setInstalledLamps(await installedLampDistricts())}catch(e){setLampProgress(`失敗：${e instanceof Error?e.message:'未知錯誤'}`)}finally{setLampBusy(null)}}}>{lampBusy===d.id?'處理中…':(done?'刪除':'下載')}</button></div>})}</div>:<small>燈柱分區資料尚未由建置流程產生。</small>}{lampProgress&&<small>{lampProgress}</small>}</div><span>{installedLamps.length}區已下載</span></div>{!facilityLoading && facilityError && <p className="honesty">{facilityError}，故不會假裝顯示已可離線搜尋附近設施。</p>}</section>}
 
