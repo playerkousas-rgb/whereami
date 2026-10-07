@@ -11,6 +11,7 @@
     "data:build": "python3 scripts/build_facilities.py && python3 scripts/build_lampposts.py"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "leaflet": "^1.9.4",
     "proj4": "^2.20.9",
     "react": "latest",
