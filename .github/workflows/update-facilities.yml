@@ -25,5 +25,5 @@ jobs:
           git config user.name 'whereami-data-bot'
           git config user.email 'actions@users.noreply.github.com'
           git add public/data/facilities.json public/data/lampposts
-          git diff --cached --quiet || git commit -m 'data: update validated facility database'
+          git diff --cached --quiet || git commit -m 'data: update validated facility database [skip ci]'
           git push
