@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { MAP_REGIONS } from './offlineMaps';
-import { loadTerrainRegion, type TerrainInstall } from './terrainData';
-import { extractSkylineProfile, matchTerrainViews, type SkylineView, type TerrainCandidate, type TerrainMatch, type TerrainPackage } from './terrainMatcher';
+import { loadDtmRegion, type DtmInstall } from './dtmData';
+import { extractSkylineProfile, type SkylineView, type TerrainCandidate, type TerrainMatch } from './terrainMatcher';
+import { matchDtmViews } from './dtmMatcher';
 
-interface Props { terrainRegions?: TerrainInstall[]; onBestCandidate?: (candidate: TerrainCandidate | null) => void; }
+interface Props { dtmRegions?: DtmInstall[]; onBestCandidate?: (candidate: TerrainCandidate | null) => void; }
 type OrientationPermissionEvent = typeof DeviceOrientationEvent & { requestPermission?: () => Promise<'granted' | 'denied'> };
 type CompassOrientationEvent = DeviceOrientationEvent & { webkitCompassHeading?: number | null };
 const normalizeHeading = (value: number) => ((value % 360) + 360) % 360;
@@ -22,7 +22,7 @@ function cameraAzimuth(event: CompassOrientationEvent): number | null {
   return normalizeHeading(Math.atan2(east, north) * 180 / Math.PI);
 }
 
-export default function TerrainCamera({ terrainRegions = [], onBestCandidate }: Props) {
+export default function TerrainCamera({ dtmRegions = [], onBestCandidate }: Props) {
   const [open, setOpen] = useState(false);
   const [cameraState, setCameraState] = useState<'idle'|'starting'|'ready'|'error'>('idle');
   const [message, setMessage] = useState('');
@@ -128,41 +128,54 @@ export default function TerrainCamera({ terrainRegions = [], onBestCandidate }: 
   };
 
   const runMatch = async () => {
-    setMatching(true); setMatch(null); setMatchProgress('載入本機等高線資料…');
+    setMatching(true); setMatch(null); setMatchProgress('載入本機5米 DTM…');
     try {
-      const installed = terrainRegions.filter(item => item.complete);
-      if (!installed.length) throw new Error('未找到完整的離線地形資料。請先下載觀察區附近的地圖及等高線。');
-      const packages: TerrainPackage[] = [];
+      const installed = dtmRegions.filter(item => item.complete);
+      if (!installed.length) throw new Error('未找到完整的5米 DTM。請先從離線資料頁下載官方檔案，匯入觀察區地形資料。');
+      const candidates: TerrainCandidate[] = [], errors: string[] = [];
       for (const item of installed) {
-        const region = MAP_REGIONS.find(candidate => candidate.id === item.id);
-        if (!region) continue;
-        setMatchProgress(`讀取${item.name}離線等高線…`);
-        packages.push({ region, features: await loadTerrainRegion(item.id) });
+        setMatchProgress(`讀取${item.name}5米 DTM…`);
+        const grid = await loadDtmRegion(item.id);
+        if (!grid) continue;
+        try {
+          const result = await matchDtmViews(views, [grid], setMatchProgress);
+          candidates.push(...result.candidates);
+        } catch (error) { errors.push(error instanceof Error ? `${item.name}：${error.message}` : item.name); }
       }
-      if (!packages.length) throw new Error('沒有可讀取的離線地形資料。');
-      const result = await matchTerrainViews(views, packages, setMatchProgress);
-      setMatch(result);
-      onBestCandidate?.(result.candidates[0] || null);
-      setMatchProgress('比對完成');
+      if (!candidates.length) throw new Error(errors.join('；') || '沒有可用的離線5米 DTM。');
+      candidates.sort((a,b) => a.scoreDegrees - b.scoreDegrees);
+      const distinct: TerrainCandidate[] = [];
+      for (const candidate of candidates) {
+        if (distinct.some(other => Math.hypot((other.lat-candidate.lat)*111_320,(other.lng-candidate.lng)*111_320*Math.cos(candidate.lat*Math.PI/180)) < 600)) continue;
+        distinct.push(candidate); if (distinct.length >= 5) break;
+      }
+      const best = distinct[0], plausible = best.scoreDegrees < 2.5 && distinct.length > 1 && distinct[1].scoreDegrees - best.scoreDegrees > 0.35;
+      const result: TerrainMatch = {
+        candidates: distinct.map(candidate => ({ ...candidate, confidence: plausible && candidate === best ? 'possible' : 'weak' })),
+        message: plausible
+          ? '找到一個較吻合的候選位置。比對使用地政總署5米 DTM，但模型及鏡頭校準未經野外驗證，請以 GPS 或標距柱核實。'
+          : '找到多個可能位置或比對度偏低；結果只供測試，請勿作為求救座標。',
+      };
+      setMatch(result); onBestCandidate?.(result.candidates[0] || null); setMatchProgress('5米 DTM 比對完成');
     } catch (error) {
-      setMatchProgress(error instanceof Error ? error.message : '山形比對失敗；請檢查離線資料後重試。');
+      setMatchProgress(error instanceof Error ? error.message : '山形比對失敗；請檢查DTM匯入資料後重試。');
       onBestCandidate?.(null);
     } finally { setMatching(false); }
   };
 
   const resetViews = () => { setViews([]); setMatch(null); setMatchProgress(''); onBestCandidate?.(null); };
   const close = () => { setCompassEnabled(false); setCompassHeading(null); setOpen(false); };
-  const completeRegions = terrainRegions.filter(item => item.complete).length;
+  const completeRegions = dtmRegions.filter(item => item.complete).length;
 
   return <>
     <section className="terrain-entry" aria-labelledby="terrain-camera-title">
       <div className="terrain-entry-copy">
         <span className="eyebrow">GPS BACKUP · CAMERA</span>
         <h2 id="terrain-camera-title">用鏡頭比對山形</h2>
-        <p>擷取不同方向的山脊輪廓，與已下載等高線做本機候選位置比對。</p>
+        <p>擷取不同方向的山脊輪廓，與已匯入5米 DTM 做本機候選位置比對。</p>
       </div>
       <button className="terrain-open" onClick={() => setOpen(true)}>📷 開始山形比對</button>
-      {!completeRegions && <small className="terrain-status">尚未下載完整地形資料</small>}
+      {!completeRegions && <small className="terrain-status">尚未匯入官方5米 DTM；相機匹配需先匯入資料</small>}
     </section>
     {open && <div className="terrain-camera-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}>
       <section className="terrain-camera-panel" role="dialog" aria-modal="true" aria-labelledby="terrain-dialog-title">
@@ -179,7 +192,7 @@ export default function TerrainCamera({ terrainRegions = [], onBestCandidate }: 
           {compassHeading !== null && <span className="terrain-heading-badge">方位 {Math.round(compassHeading)}°</span>}
         </div>
         <div className="terrain-camera-info">
-          <p className="terrain-safety">試驗功能：以相機畫面和20米等高線作粗略匹配，候選位置可能錯誤；不是 GPS，亦未經現場驗證。請勿單獨用於求救／導航。</p>
+          <p className="terrain-safety">試驗功能：使用地政總署5米 DTM（官方標示精度±5米）和相機輪廓；鏡頭分割、方位校準及定位分數仍未經野外驗證，候選可能錯誤。不是 GPS，請勿單獨用於求救／導航。</p>
           <div className="terrain-controls">
             {!compassEnabled && <button className="terrain-retry" onClick={enableCompass}>🧭 啟用指南針</button>}
             <label>手動鏡頭方位（真北°）<input aria-label="手動鏡頭真北方位" inputMode="numeric" type="number" min="0" max="359" placeholder={compassHeading == null ? '例如 45' : `${Math.round(compassHeading)}`} value={manualHeading} onChange={event => setManualHeading(event.target.value)}/></label>
@@ -192,8 +205,8 @@ export default function TerrainCamera({ terrainRegions = [], onBestCandidate }: 
             {views.length > 0 && <button onClick={resetViews}>清除並重拍</button>}
           </div>
           {compassMessage && <p className="terrain-sensor-message" role="status">{compassMessage}</p>}
-          {completeRegions > 0 && <p>本機完整地形區域：{terrainRegions.filter(item => item.complete).map(item => item.name).join('、')}（20米等高線）</p>}
-          {completeRegions === 0 && <p>未有完整離線地形資料；請先回到下載頁，下載觀察區附近資料。</p>}
+          {completeRegions > 0 && <p>本機完整5米 DTM：{dtmRegions.filter(item => item.complete).map(item => item.name).join('、')}</p>}
+          {completeRegions === 0 && <p>尚未匯入5米 DTM；請到「下載」頁下載官方全港 ASC ZIP，選擇目標地區並匯入。</p>}
           {views.length >= 3 && <button className="terrain-action terrain-match-button" disabled={matching || completeRegions === 0} onClick={runMatch}>{matching ? '正在比對…' : '⌖ 比對候選位置'}</button>}
           {matchProgress && <p className="terrain-match-progress" role="status">{matchProgress}</p>}
           {match && <div className="terrain-match-results" aria-live="polite">
