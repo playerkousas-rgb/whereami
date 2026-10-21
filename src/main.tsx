@@ -3,14 +3,18 @@ import { createRoot } from 'react-dom/client';
 import { Analytics } from '@vercel/analytics/react';
 import { convertCoordinates, formatHkt, type ConvertedCoordinates } from './coordinates';
 import { cachedFeeds, feedTime, refreshAll, stateLabel, type FeedResult } from './liveInfo';
-import { clearFacilityUpdate, distanceMeters, facilityName, formatDistance, hasFacilityOverride, loadFacilities, nearestFacilities, normalizeCode, refreshFacilities, type Facility, type FacilityDatabase, type FacilityType } from './facilities';
+import { clearFacilityUpdate, distanceMeters, facilityName, formatDistance, hasFacilityOverride, loadFacilities, nearestFacilities, refreshFacilities, type Facility, type FacilityDatabase, type FacilityType } from './facilities';
 // Lazy-loaded: leaflet (~350kB) is only fetched once the user actually opens a map tab,
 // instead of bloating the initial JS payload for everyone. FACILITY_COLORS/ALERT_COLOR live
 // in the dependency-free ./mapStyles so the legend can render before the map chunk arrives.
 const LocationMap = lazy(() => import('./LocationMap'));
 import { FACILITY_COLORS, ALERT_COLOR } from './mapStyles';
-import { downloadLampDistrict, findLampPost, installedLampDistricts, loadLampManifest, removeLampDistrict, type LampManifest } from './lampposts';
+import TerrainCamera from './TerrainCamera';
+import LandmarkSelector from './LandmarkSelector';
+import { downloadLampDistrict, installedLampDistricts, loadLampManifest, removeLampDistrict, type LampManifest } from './lampposts';
 import { downloadRegion, MAP_REGIONS, mapInstalls, regionUrls, removeRegion, verifyRegion, checkRegionUpdate, type MapInstall } from './offlineMaps';
+import { downloadTerrainRegion, removeTerrainRegion, terrainInstalls, verifyTerrainRegion, type TerrainInstall } from './terrainData';
+import type { TerrainCandidate } from './terrainMatcher';
 import './styles.css';
 
 type PositionState = { coords: ConvertedCoordinates; accuracy: number; timestamp: number; altitude: number | null; heading: number | null };
@@ -44,13 +48,14 @@ function App() {
   const [lampBusy, setLampBusy] = useState<string|null>(null);
   const [maps, setMaps] = useState<MapInstall[]>(mapInstalls);
   const [mapProgress, setMapProgress] = useState('');
+  const [terrainProgress, setTerrainProgress] = useState('');
+  const [terrainMaps, setTerrainMaps] = useState<TerrainInstall[]>([]);
+  const [terrainCandidate, setTerrainCandidate] = useState<TerrainCandidate|null>(null);
   const [mapDownloading, setMapDownloading] = useState<string|null>(null);
   const [mapChecking, setMapChecking] = useState<string|null>(null);
   const [mapUpdateStatus, setMapUpdateStatus] = useState<Record<string,string>>({});
   const mapAbort = useRef<AbortController|null>(null);
-  const [landmarkQuery, setLandmarkQuery] = useState('');
   const [confirmedLandmark, setConfirmedLandmark] = useState<Facility | null>(null);
-  const [landmarkMessage, setLandmarkMessage] = useState('');
   const watchId = useRef<number | null>(null);
 
   const acceptPosition = (p: GeolocationPosition) => {
@@ -81,34 +86,6 @@ function App() {
     watchId.current=navigator.geolocation.watchPosition(acceptPosition,rejectPosition,geoOptions); setTracking(true);
   };
 
-  const confirmLandmark = async () => {
-    const q=normalizeCode(landmarkQuery);
-    if(!q){setLandmarkMessage('請輸入完整柱號');return;}
-    if(!facilityDb?.items.length){setLandmarkMessage('內置地標資料尚未建立，暫時不能核對柱號');return;}
-    const candidates=facilityDb.items.filter(x=>x.type==='distance_post'||x.type==='other');
-    const exact=candidates.filter(x=>[x.id.split(':').pop(),x.name].some(v=>v?.toUpperCase().replace(/\s+/g,'')===q));
-    if(exact.length!==1){
-      if(exact.length>1){setLandmarkMessage('找到多於一個相同編號，不能安全確認；位置未被更改');return;}
-      // findLampPost() opens IndexedDB, which can throw or reject in restrictive contexts (Safari
-      // private browsing, storage blocked by policy, transient device storage errors). Without a
-      // catch here, an unhandled rejection means this button silently does nothing on press -- a
-      // hiker mid-confirmation gets zero feedback and may assume the app is broken or their tap
-      // didn't register.
-      let lamp;
-      try { lamp = await findLampPost(q); }
-      catch { setLandmarkMessage('未能讀取已下載嘅燈柱資料（裝置儲存空間可能暫時無法使用）；位置未被更改，可重試'); return; }
-      if(!lamp){setLandmarkMessage(installedLamps.length?'找不到完全相符的官方柱號；位置未被更改':'找不到標距柱；尚未下載任何地區燈柱資料。位置未被更改');return;}
-      const found:Facility={id:`lamp:${lamp.n}`,type:'other',name:`燈柱 ${lamp.n}`,lat:lamp.a,lng:lamp.o,address:lamp.s,source:'路政署燈柱資料'};
-      setConfirmedLandmark(found);
-      const gap=position?distanceMeters(position.coords.latitude,position.coords.longitude,found.lat,found.lng):null;
-      setLandmarkMessage(`已找到官方燈柱${gap==null?'':`；與裝置定位相距 ${formatDistance(gap)}`}。請再次確認柱號。`);
-      return;
-    }
-    setConfirmedLandmark(exact[0]);
-
-    const gap=position?distanceMeters(position.coords.latitude,position.coords.longitude,exact[0].lat,exact[0].lng):null;
-    setLandmarkMessage(`已找到官方地標${gap==null?'':`；與裝置定位相距 ${formatDistance(gap)}`}。請確認眼前柱號完全相同。`);
-  };
   const updateFacilities = async () => {setFacilityUpdating(true);setFacilityProgress('準備更新…');try{const db=await refreshFacilities(setFacilityProgress);setFacilityDb(db);setFacilityError('');setFacilityOverridden(true);setFacilityProgress(`更新完成：${db.items.length.toLocaleString()} 個設施點`)}catch(e){setFacilityProgress(`暫時未能更新：${e instanceof Error?e.message:'未知錯誤'}。原有資料未被更改。`)}finally{setFacilityUpdating(false)}};
   // clearFacilityUpdate() opens IndexedDB, which can throw in the same restrictive contexts noted
   // above. Previously an unhandled rejection here meant the button did nothing at all -- no reload,
@@ -120,8 +97,10 @@ function App() {
     setOfflineChecking(true);setReadiness('正在逐一檢查已下載地圖…');
     try{
       const installed=mapInstalls();if(!installed.length){setReadiness('未下載任何離線底圖');return}
-      for(const item of installed){const region=MAP_REGIONS.find(r=>r.id===item.id);if(!region)continue;const result=await verifyRegion(region,(done,total)=>setReadiness(`檢查${region.name}：${done}／${total}`));if(!result.complete){setReadiness(`${region.name}缺少${result.missing}個圖磚，不能視為完整離線地圖；請刪除後重新下載`);return}}
-      setReadiness(`離線檢查完成：${installed.length}個地區底圖完整；設施資料${facilityDb?.items.length?'可讀取':'尚未建立'}；燈柱已下載${installedLamps.length}區`)
+      for(const item of installed){const region=MAP_REGIONS.find(r=>r.id===item.id);if(!region)continue;const result=await verifyRegion(region,(done,total)=>setReadiness(`檢查${region.name}底圖：${done}／${total}`));if(!result.complete){setReadiness(`${region.name}底圖缺少${result.missing}個圖磚，不能視為完整離線地圖`);return}}
+      const installedTerrain=await terrainInstalls();
+      for(const item of installedTerrain){const result=await verifyTerrainRegion(item.id);if(!result.complete){setReadiness(`${item.name}地形資料不完整（缺${result.missingPages}頁），請重試下載`);return}}
+      setReadiness(`離線檢查完成：${installed.length}區底圖完整、${installedTerrain.length}區地形資料完整；設施資料${facilityDb?.items.length?'可讀取':'尚未建立'}；燈柱已下載${installedLamps.length}區`)
     }catch(e){
       // caches.open()/match() can throw in restrictive contexts (e.g. Cache Storage disabled in
       // some private-browsing modes). Previously this left "正在逐一檢查…" on screen forever with
@@ -129,7 +108,41 @@ function App() {
       setReadiness(`未能完成離線檢查：${e instanceof Error?e.message:'未知錯誤'}`)
     }finally{setOfflineChecking(false)}
   };
-  const installMap=async(region:typeof MAP_REGIONS[number])=>{const ctrl=new AbortController();mapAbort.current=ctrl;setMapDownloading(region.id);setMapProgress(`準備下載${region.name}…`);try{await downloadRegion(region,(done,total)=>setMapProgress(`${region.name}：${done.toLocaleString()}／${total.toLocaleString()} 圖磚（${Math.round(done/total*100)}%）`),ctrl.signal);setMaps(mapInstalls());setMapProgress(`${region.name}已完成並可離線使用`)}catch(e){setMapProgress(e instanceof DOMException&&e.name==='AbortError'?'下載已取消，未完成資料已清除':`下載中斷：${e instanceof Error?e.message:'未知錯誤'}。已下載嘅圖磚已保留，按「下載」可由中斷處繼續，毋須重新開始。`)}finally{setMapDownloading(null);mapAbort.current=null}};
+  const installMap = async (region:typeof MAP_REGIONS[number]) => {
+    const ctrl = new AbortController();
+    mapAbort.current = ctrl;
+    setMapDownloading(region.id);
+    setMapProgress(`準備下載${region.name}底圖…`);
+    setTerrainProgress('');
+    try {
+      await downloadRegion(region, (done,total) => setMapProgress(`${region.name}底圖：${done.toLocaleString()}／${total.toLocaleString()} 圖磚（${Math.round(done/total*100)}%）`), ctrl.signal);
+      setMaps(mapInstalls());
+      setMapProgress(`${region.name}底圖完成；開始下載山形等高線資料…`);
+      await downloadTerrainRegion(region, (done,total) => setTerrainProgress(`${region.name}地形：${done.toLocaleString()}／${total.toLocaleString()} 等高線`), ctrl.signal);
+      setTerrainMaps(await terrainInstalls());
+      setMapProgress(`${region.name}底圖及地形資料已下載，可供試驗性鏡頭比對`);
+    } catch(e) {
+      const cancelled = e instanceof DOMException && e.name === 'AbortError';
+      setMapProgress(cancelled ? '下載已取消；已完成的底圖／地形頁面會保留，重試可續傳' : `下載中斷：${e instanceof Error?e.message:'未知錯誤'}。已完成資料會保留，重試可續傳。`);
+      setMaps(mapInstalls());
+      setTerrainMaps(await terrainInstalls().catch(() => terrainMaps));
+    } finally {
+      setMapDownloading(null);
+      mapAbort.current = null;
+    }
+  };
+  const removeOfflineRegion = async (region:typeof MAP_REGIONS[number]) => {
+    try {
+      await removeRegion(region.id);
+      await removeTerrainRegion(region.id);
+      setMaps(mapInstalls());
+      setTerrainMaps(await terrainInstalls());
+      setMapProgress(`${region.name}底圖及地形資料已刪除`);
+      setTerrainProgress('');
+    } catch(e) {
+      setMapProgress(`未能完整刪除${region.name}資料：${e instanceof Error?e.message:'未知錯誤'}`);
+    }
+  };
   const checkMapUpdate = async (region:typeof MAP_REGIONS[number]) => { setMapChecking(region.id); setMapUpdateStatus(x=>({...x,[region.id]:'正在向官方檢查圖磚版本…'})); try { const result=await checkRegionUpdate(region); setMapUpdateStatus(x=>({...x,[region.id]:result.updated?'發現可能有新版，請重新下載':'暫未發現新版（只檢查代表性圖磚）'})); } catch { setMapUpdateStatus(x=>({...x,[region.id]:'暫時未能檢查官方版本'})); } finally { setMapChecking(null); } };
   const refresh = async () => { setRefreshing(true); setFeeds(x => x.map(f => ({...f, state: 'loading'}))); await refreshAll(r => setFeeds(x => x.map(f => f.id === r.id ? r : f))); setRefreshing(false); };
   const shown = locked || position;
@@ -155,8 +168,9 @@ function App() {
   const report = useMemo(() => {
     const landmark=confirmedLandmark?`\n現場確認地標：${confirmedLandmark.name}\n地標官方座標：${confirmedLandmark.lat.toFixed(6)}, ${confirmedLandmark.lng.toFixed(6)}\n目前位置參考：以上述已確認地標的官方座標為準。`:'';
     const hint=nearestKnownPost?`\n附近已知標距柱（系統計算，尚未現場確認）：${nearestKnownPost.name}，距離約 ${formatDistance(nearestKnownPost.distance)}，方位 ${nearestKnownPost.direction} ${Math.round(nearestKnownPost.bearing)}°`:'';
-    return shown ? `需要報告位置\n位置來源：${locked ? '已鎖定裝置位置' : '裝置定位'}\nWGS84：${shown.coords.latitude.toFixed(6)}, ${shown.coords.longitude.toFixed(6)}\nHK1980：E ${Math.round(shown.coords.hkE)} N ${Math.round(shown.coords.hkN)}\n方格：${shown.coords.grid8}\n定位誤差：±${Math.round(shown.accuracy)} 米\n定位時間：${formatHkt(shown.timestamp)}${landmark}${hint}` : confirmedLandmark?`暫時未能取得裝置位置。\n現場確認地標：${confirmedLandmark.name}\n地標官方座標：${confirmedLandmark.lat.toFixed(6)}, ${confirmedLandmark.lng.toFixed(6)}\n目前位置參考：以上述已確認地標的官方座標為準。${hint}`:'暫時未能取得位置。請向接線員描述附近地標。';
-  }, [shown, locked, confirmedLandmark, nearestKnownPost]);
+    const terrain=terrainCandidate?`\n試驗性山形比對候選（不是 GPS，尚未現場確認）：${terrainCandidate.lat.toFixed(5)}, ${terrainCandidate.lng.toFixed(5)}\n粗略不確定度：約 ±${Math.round(terrainCandidate.uncertaintyMetres)} 米（未校準）；山形差 ${terrainCandidate.scoreDegrees.toFixed(2)}°；區域：${terrainCandidate.region}；比對時間：${formatHkt(terrainCandidate.calculatedAt)}\n安全提示：此候選由20米等高線及相機輪廓粗略推算，可能錯誤，未經驗證，請勿單獨依賴作求救位置。`:'';
+    return shown ? `需要報告位置\n位置來源：${locked ? '已鎖定裝置位置' : '裝置定位'}\nWGS84：${shown.coords.latitude.toFixed(6)}, ${shown.coords.longitude.toFixed(6)}\nHK1980：E ${Math.round(shown.coords.hkE)} N ${Math.round(shown.coords.hkN)}\n方格：${shown.coords.grid8}\n定位誤差：±${Math.round(shown.accuracy)} 米\n定位時間：${formatHkt(shown.timestamp)}${landmark}${hint}${terrain}` : confirmedLandmark?`暫時未能取得裝置位置。\n現場確認地標：${confirmedLandmark.name}\n地標官方座標：${confirmedLandmark.lat.toFixed(6)}, ${confirmedLandmark.lng.toFixed(6)}\n目前位置參考：以上述已確認地標的官方座標為準。${hint}${terrain}`:`暫時未能取得裝置位置。請向接線員描述附近地標。${terrain}${hint}`;
+  }, [shown, locked, confirmedLandmark, nearestKnownPost, terrainCandidate]);
   const confirmedCoords = useMemo(() => confirmedLandmark ? convertCoordinates(confirmedLandmark.lat, confirmedLandmark.lng) : null, [confirmedLandmark]);
   const positionAge = shown ? Math.max(0, Math.round((Date.now()-shown.timestamp)/1000)) : null;
   const copyReport = async () => { try { await navigator.clipboard.writeText(report); setCopyState('已複製報位資料'); } catch { setCopyState('未能自動複製，請長按下方文字複製'); } };
@@ -178,7 +192,7 @@ function App() {
     hasFacilityOverride().then(setFacilityOverridden).catch(() => {});
     navigator.storage?.estimate().then(x=>setStorage({usage:x.usage||0,quota:x.quota||0})).catch(()=>{});
     navigator.storage?.persisted?.().then(setStoragePersistent).catch(()=>{});
-    loadLampManifest().then(setLampManifest).catch(()=>{});installedLampDistricts().then(setInstalledLamps).catch(()=>{});
+    loadLampManifest().then(setLampManifest).catch(()=>{});installedLampDistricts().then(setInstalledLamps).catch(()=>{});terrainInstalls().then(setTerrainMaps).catch(()=>{});
     const onOnline=()=>setOnline(true),onOffline=()=>setOnline(false);window.addEventListener('online',onOnline);window.addEventListener('offline',onOffline);
     navigator.permissions?.query({name:'geolocation'}).then(p=>{setGeoPermission(p.state);p.onchange=()=>setGeoPermission(p.state)}).catch(()=>setGeoPermission('unsupported'));
     return () => { if(watchId.current!=null) navigator.geolocation.clearWatch(watchId.current);window.removeEventListener('online',onOnline);window.removeEventListener('offline',onOffline); };
@@ -194,6 +208,7 @@ function App() {
   const mapAlerts = useMemo(() => [...(feeds.find(f=>f.id==='trails')?.items||[]), ...(feeds.find(f=>f.id==='facilities')?.items||[])], [feeds]);
   const mapLegend = useMemo(() => { const types=[...new Set(mapFacilities.slice(0,50).map(x=>x.type))]; return types.map(t=>({label:facilityName[t],color:FACILITY_COLORS[t]||FACILITY_COLORS.other})); }, [mapFacilities]);
   const offlineCoverage=shown?MAP_REGIONS.filter(r=>shown.coords.latitude>=r.bounds[0]&&shown.coords.latitude<=r.bounds[2]&&shown.coords.longitude>=r.bounds[1]&&shown.coords.longitude<=r.bounds[3]).map(r=>({name:r.name,ready:maps.some(x=>x.id===r.id&&x.complete)})):[];
+  const terrainCoverage=shown?MAP_REGIONS.filter(r=>shown.coords.latitude>=r.bounds[0]&&shown.coords.latitude<=r.bounds[2]&&shown.coords.longitude>=r.bounds[1]&&shown.coords.longitude<=r.bounds[3]).map(r=>({name:r.name,ready:terrainMaps.some(x=>x.id===r.id&&x.complete)})):[];
   const quality = shown ? (shown.accuracy <= 20 ? {label:'較佳',tone:'good',note:'誤差細，準'} : shown.accuracy <= 100 ? {label:'一般',tone:'medium',note:'去開揚啲嘅地方等下會準啲'} : {label:'較差',tone:'poor',note:'誤差好大，唔好淨係靠呢個位'}) : null;
   const weatherNowFeed = feeds.find(f => f.id === 'weather-now');
   const weatherWarnFeed = feeds.find(f => f.id === 'weather');
@@ -222,6 +237,7 @@ function App() {
     {label:'定位權限',ok:geoPermission==='granted'||!!shown,detail:geoPermission==='denied'?'已拒絕，請到系統設定開啟':geoPermission==='prompt'?'尚未授權，請先按定位':geoPermission==='unsupported'?'瀏覽器未能查詢權限狀態':'已允許'},
     {label:'目前位置',ok:!!shown,detail:shown?`誤差 ±${Math.round(shown.accuracy)} 米，${formatHkt(shown.timestamp)}`:'尚未取得裝置位置'},
     {label:'離線底圖',ok:offlineCoverage.some(x=>x.ready),detail:shown?(offlineCoverage.some(x=>x.ready)?offlineCoverage.filter(x=>x.ready).map(x=>x.name).join('、'):'目前位置沒有完整離線底圖'):(maps.length?`已下載${maps.length}區；取得位置後再核對覆蓋`:'尚未下載')},
+    {label:'離線山形資料',ok:terrainCoverage.some(x=>x.ready),detail:shown?(terrainCoverage.some(x=>x.ready)?terrainCoverage.filter(x=>x.ready).map(x=>x.name).join('、'):'此區尚未下載等高線資料'):(terrainMaps.length?`已下載${terrainMaps.length}區`:'尚未下載')},
     {label:'基本設施',ok:!!facilityDb?.items.length,detail:facilityDb?.items.length?`${facilityDb.items.length.toLocaleString()}項，版本${facilityDb.version}`:'尚未建立或下載'},
     {label:'燈柱資料',ok:installedLamps.length>0,detail:installedLamps.length?`已下載${installedLamps.length}區`:'未下載；標距柱仍可使用'},
     {label:'儲存保留',ok:storagePersistent===true,detail:storagePersistent?'瀏覽器已允許保留':'未獲保證，資料可能被自動清理'},
@@ -239,6 +255,7 @@ function App() {
           {shown ? <><div className="latlng">{shown.coords.latitude.toFixed(6)}<br/>{shown.coords.longitude.toFixed(6)}</div><div className="accuracy">誤差半徑 ±{Math.round(shown.accuracy)} 米 · {formatHkt(shown.timestamp)}</div>{quality&&<div className={`quality ${quality.tone}`}><strong>定位品質：{quality.label}</strong><span>{quality.note}</span></div>}</> : <div className="empty">撳下面粒掣，搵你而家喺邊。冇數據都得。</div>}
           <div className="locate-actions"><button className="primary" disabled={locating} onClick={locate}>{locating?'定位中…':'找出我在哪裡'}</button><button className="secondary-dark" onClick={toggleTracking}>{tracking?'停止持續定位':'持續定位'}</button></div>
         </section>
+        <TerrainCamera terrainRegions={terrainMaps} onBestCandidate={setTerrainCandidate}/>
         {mapPoint && <><Suspense fallback={<div className="location-map location-map-loading" aria-label="地圖載入中">地圖載入中…</div>}><LocationMap lat={mapPoint.lat} lng={mapPoint.lng} accuracy={mapPoint.accuracy} locked={!!locked} devicePosition={!!shown} landmark={shown?confirmedLandmark:null} facilities={mapFacilities} alerts={mapAlerts}/></Suspense>{(mapLegend.length>0||mapAlerts.length>0)&&<div className="map-legend"><span><i style={{background:mapPoint&&shown?(locked?'#e9a23b':'#2078d4'):'#c53d35'}}/>{shown?(locked?'已鎖定裝置位置':'裝置定位'):'已確認地標'}</span>{mapLegend.map(x=><span key={x.label}><i style={{background:x.color}}/>{x.label}</span>)}{mapAlerts.length>0&&<span><i style={{background:ALERT_COLOR}}/>封閉山徑／設施</span>}</div>}<p className="map-note">每個點都有編號，撳一下睇詳情</p>{shown&&<p className={`offline-coverage ${offlineCoverage.some(x=>x.ready)?'ready':'missing'}`}>{offlineCoverage.some(x=>x.ready)?`✓ 呢度有離線地圖：${offlineCoverage.filter(x=>x.ready).map(x=>x.name).join('、')}`:'⚠️ 呢度未有離線地圖，冇網絡會見到空白'}</p>}</>}
         {shown && <section className="grid cards">
           <article><label>香港 1980 方格</label><strong>E {Math.round(shown.coords.hkE)}</strong><strong>N {Math.round(shown.coords.hkN)}</strong></article>
@@ -247,8 +264,8 @@ function App() {
           <article><label>位置紀錄</label><strong>{locked?'已鎖定':'即時位置'}</strong><small>{shown.altitude == null ? '裝置未提供高度' : `高度 ${Math.round(shown.altitude)} 米`}</small></article>
         </section>}
         {shown && <><div className="actions"><button onClick={()=>setLocked(locked?null:position)}>{locked?'解除位置鎖定':'鎖定這個位置'}</button><button onClick={copyReport}>複製報位資料</button><button onClick={()=>shareOrCopy(report,'我的位置')}>分享</button></div>{copyState&&<p className="copy-state">{copyState}</p>}</>}
-        {nearestPosts.length>0 && <section className="landmark-card wayfinding-card"><span className="eyebrow">WAYFINDING</span><h2>附近標距柱</h2><p>行去核對下面邊支柱嘅編號同眼前一樣</p><div className="post-list">{nearestPosts.map(p=><div className="post-item" key={p.id}><strong>{p.name}</strong><span>{formatDistance(p.distance)} · {p.direction} {Math.round(p.bearing)}°</span><a href={mapsAppLink(p.lat,p.lng,p.name)} target="_blank" rel="noreferrer">🧭 開路線（要網絡）</a></div>)}</div></section>}
-        <section className="landmark-card"><span className="eyebrow">KNOWN LANDMARK</span><h2>用眼前柱號核實位置</h2><p>輸入柱上面嘅完整編號</p><div className="landmark-search"><input value={landmarkQuery} onChange={e=>setLandmarkQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')confirmLandmark()}} placeholder="例如 M047"/><button onClick={confirmLandmark}>核對</button></div>{landmarkMessage&&<p className={confirmedLandmark?'landmark-ok':'landmark-error'}>{landmarkMessage}</p>}{confirmedLandmark&&confirmedCoords&&<div className="confirmed-landmark"><strong>現在位置參考：{confirmedLandmark.name}</strong><span>WGS84　{confirmedLandmark.lat.toFixed(6)}, {confirmedLandmark.lng.toFixed(6)}</span><span>HK1980　E {Math.round(confirmedCoords.hkE)}　N {Math.round(confirmedCoords.hkN)}</span><span>方格　{confirmedCoords.grid8}</span><small>🔴 已確認地標　🔵 裝置位置</small><button onClick={()=>{setConfirmedLandmark(null);setLandmarkMessage('')}}>取消確認</button></div>}</section>
+        {nearestPosts.length>0 && <section className="landmark-card wayfinding-card"><span className="eyebrow">WAYFINDING</span><h2>附近標距柱</h2><p>行去核對下面邊支柱嘅編號同眼前一樣</p><div className="post-list">{nearestPosts.map(p=><div className="post-item" key={p.id}><strong>{p.name}</strong><span>{formatDistance(p.distance)} · {p.direction} {Math.round(p.bearing)}°</span><button type="button" className="post-confirm" onClick={()=>setConfirmedLandmark(p)}>我就在這支旁邊</button><a href={mapsAppLink(p.lat,p.lng,p.name)} target="_blank" rel="noreferrer">🧭 開路線（要網絡）</a></div>)}</div></section>}
+        <LandmarkSelector database={facilityDb} position={shown ? {lat:shown.coords.latitude,lng:shown.coords.longitude} : null} installedLamps={installedLamps} selected={confirmedLandmark} onSelect={place=>setConfirmedLandmark(place)} onClear={()=>setConfirmedLandmark(null)}/>
       </>}
 
       {tab === 'prepare' && (
@@ -380,9 +397,9 @@ function App() {
         </section>
       )}
 
-      {tab === 'download' && <section><span className="eyebrow">OFFLINE CONTENT</span><h2>離線資料</h2>{storage&&<div className="storage"><span>此網站已用空間</span><strong>{(storage.usage/1048576).toFixed(1)} MB</strong><small>瀏覽器可用配額約 {(storage.quota/1073741824).toFixed(1)} GB；實際可用量由裝置決定</small><small>儲存保留：{storagePersistent===true?'已允許':storagePersistent===false?'未允許，資料可能被瀏覽器清理':'未能確認'}</small><div className="readiness-actions"><button onClick={requestPersistentStorage}>要求保留離線資料</button><button disabled={offlineChecking} onClick={runOfflineCheck}>{offlineChecking?'檢查中…':'檢查離線完整性'}</button></div>{readiness&&<strong className="readiness-result">{readiness}</strong>}</div>}<div className="download-card ready"><div><h3>全港基本設施</h3><p>公廁、AED、消防局等設施資料，可更新到手機度</p><div className="download-actions"><button disabled={facilityUpdating} onClick={updateFacilities}>{facilityUpdating?'更新中…':'更新官方設施資料'}</button>{facilityOverridden&&<button onClick={restoreBundledFacilities}>還原內置版本</button>}</div>{facilityProgress&&<small>{facilityProgress}</small>}</div><span>{facilityDb?.items.length ? `${facilityDb.items.length.toLocaleString()} 項 · ${facilityDb.version}` : '尚未建立'}</span></div><div className="download-card map-download"><div><h3>地區離線底圖</h3><p>落地圖底圖，建議用Wi-Fi。見到「完成」先可以離線用</p><div className="district-list">{MAP_REGIONS.map(r=>{const done=maps.some(x=>x.id===r.id&&x.complete);const count=regionUrls(r).length;return <div key={r.id}><span>{r.name} · {count.toLocaleString()}圖磚</span>{mapDownloading===r.id?<button onClick={()=>mapAbort.current?.abort()}>取消</button>:<><button disabled={!!mapDownloading} onClick={async()=>{if(done){try{await removeRegion(r.id);setMaps(mapInstalls());setMapProgress(`${r.name}已刪除`)}catch(e){setMapProgress(`未能刪除${r.name}：${e instanceof Error?e.message:'未知錯誤'}`)}}else installMap(r)}}>{done?'刪除':'下載'}</button>{done&&<button className="check-update" disabled={mapChecking===r.id} onClick={()=>checkMapUpdate(r)}>{mapChecking===r.id?'檢查中…':'檢查新版'}</button>}</>}</div>})}</div>{mapProgress&&<small>{mapProgress}</small>}{Object.entries(mapUpdateStatus).map(([id,status])=>{const r=MAP_REGIONS.find(x=>x.id===id);return r&&status?<small key={id} className="map-update-status">{r.name}：{status}</small>:null})}</div><span>{maps.length}區已下載</span></div><div className="download-card lamp-download"><div><h3>地區燈柱</h3><p>落嚟先可以核對燈柱編號</p>{lampManifest?.districts.length?<div className="district-list">{lampManifest.districts.map(d=>{const done=installedLamps.includes(d.id);return <div key={d.id}><span>{d.name} · {d.count.toLocaleString()}支 · {(d.bytes/1048576).toFixed(1)} MB</span><button disabled={!!lampBusy} onClick={async()=>{setLampBusy(d.id);try{if(done){await removeLampDistrict(d.id)}else{await downloadLampDistrict(d,setLampProgress)}setInstalledLamps(await installedLampDistricts())}catch(e){setLampProgress(`失敗：${e instanceof Error?e.message:'未知錯誤'}`)}finally{setLampBusy(null)}}}>{lampBusy===d.id?'處理中…':(done?'刪除':'下載')}</button></div>})}</div>:<small>燈柱分區資料尚未由建置流程產生。</small>}{lampProgress&&<small>{lampProgress}</small>}</div><span>{installedLamps.length}區已下載</span></div>{!facilityLoading && facilityError && <p className="honesty">{facilityError}，故不會假裝顯示已可離線搜尋附近設施。</p>}</section>}
+      {tab === 'download' && <section><span className="eyebrow">OFFLINE CONTENT</span><h2>離線資料</h2>{storage&&<div className="storage"><span>此網站已用空間</span><strong>{(storage.usage/1048576).toFixed(1)} MB</strong><small>瀏覽器可用配額約 {(storage.quota/1073741824).toFixed(1)} GB；實際可用量由裝置決定</small><small>儲存保留：{storagePersistent===true?'已允許':storagePersistent===false?'未允許，資料可能被瀏覽器清理':'未能確認'}</small><div className="readiness-actions"><button onClick={requestPersistentStorage}>要求保留離線資料</button><button disabled={offlineChecking} onClick={runOfflineCheck}>{offlineChecking?'檢查中…':'檢查離線完整性'}</button></div>{readiness&&<strong className="readiness-result">{readiness}</strong>}</div>}<div className="download-card ready"><div><h3>全港基本設施</h3><p>公廁、AED、消防局等設施資料，可更新到手機度</p><div className="download-actions"><button disabled={facilityUpdating} onClick={updateFacilities}>{facilityUpdating?'更新中…':'更新官方設施資料'}</button>{facilityOverridden&&<button onClick={restoreBundledFacilities}>還原內置版本</button>}</div>{facilityProgress&&<small>{facilityProgress}</small>}</div><span>{facilityDb?.items.length ? `${facilityDb.items.length.toLocaleString()} 項 · ${facilityDb.version}` : '尚未建立'}</span></div><div className="download-card map-download"><div><h3>離線地圖＋山形資料</h3><p>一按下載所選地區的官方底圖、標記及等高線資料。鏡頭原型可用三個以上視角產生候選座標，但未經野外校準，不是安全級定位。</p><div className="district-list">{MAP_REGIONS.map(r=>{const mapDone=maps.some(x=>x.id===r.id&&x.complete);const terrainDone=terrainMaps.some(x=>x.id===r.id&&x.complete);const ready=mapDone&&terrainDone;const count=regionUrls(r).length;return <div key={r.id}><span>{r.name} · {mapDone?'底圖✓':'底圖未下載'} · {terrainDone?'山形✓':'山形未下載'}</span>{mapDownloading===r.id?<button onClick={()=>mapAbort.current?.abort()}>取消</button>:<><button disabled={!!mapDownloading} onClick={()=>ready?void removeOfflineRegion(r):void installMap(r)}>{ready?'刪除整區':mapDone?'下載山形資料':'一鍵下載地圖＋山形'}</button>{mapDone&&<button className="check-update" disabled={mapChecking===r.id} onClick={()=>checkMapUpdate(r)}>{mapChecking===r.id?'檢查中…':'檢查底圖新版'}</button>}</>}</div>})}</div>{mapProgress&&<small>{mapProgress}</small>}{terrainProgress&&<small>{terrainProgress}</small>}{Object.entries(mapUpdateStatus).map(([id,status])=>{const r=MAP_REGIONS.find(x=>x.id===id);return r&&status?<small key={id} className="map-update-status">{r.name}：{status}</small>:null})}</div><span>{maps.length}區已下載</span></div><div className="download-card lamp-download"><div><h3>地區燈柱</h3><p>落嚟先可以核對燈柱編號</p>{lampManifest?.districts.length?<div className="district-list">{lampManifest.districts.map(d=>{const done=installedLamps.includes(d.id);return <div key={d.id}><span>{d.name} · {d.count.toLocaleString()}支 · {(d.bytes/1048576).toFixed(1)} MB</span><button disabled={!!lampBusy} onClick={async()=>{setLampBusy(d.id);try{if(done){await removeLampDistrict(d.id)}else{await downloadLampDistrict(d,setLampProgress)}setInstalledLamps(await installedLampDistricts())}catch(e){setLampProgress(`失敗：${e instanceof Error?e.message:'未知錯誤'}`)}finally{setLampBusy(null)}}}>{lampBusy===d.id?'處理中…':(done?'刪除':'下載')}</button></div>})}</div>:<small>燈柱分區資料尚未由建置流程產生。</small>}{lampProgress&&<small>{lampProgress}</small>}</div><span>{installedLamps.length}區已下載</span></div>{!facilityLoading && facilityError && <p className="honesty">{facilityError}，故不會假裝顯示已可離線搜尋附近設施。</p>}</section>}
 
-      {tab === 'sources' && <section className="sources-page"><span className="eyebrow">DATA TRANSPARENCY</span><h2>資料來源及版權聲明</h2><p className="source-intro">「出發前」及「附近」分頁已在 App 內完整顯示目前天氣、警告、封路、封閉山徑及設施資料，毋須另外前往官方網站查看。以下連結只供核對原始出處及版權，不代表官方機構立場；資料可能延遲���缺漏或暫時無法取得，使用前請查看每項資料的狀態及時間。</p><div className="source-list"><article><div><h3>香港地政總署 · 地圖底圖及標記</h3><p>用於地圖顯示、香港地圖方格及離線底圖。</p></div><a href="https://www.landsd.gov.hk/" target="_blank" rel="noreferrer">地政總署 ↗</a></article><article><div><h3>香港天文台 · 天氣警告</h3><p>用於顯示目前天氣警告及官方發布時間。</p></div><a href="https://www.hko.gov.hk/tc/wxinfo/currwx/" target="_blank" rel="noreferrer">香港天文台 ↗</a></article><article><div><h3>運輸署 · 封路及交通事故</h3><p>用於顯示交通消息及道路狀況。</p></div><a href="https://www.td.gov.hk/" target="_blank" rel="noreferrer">運輸署 ↗</a></article><article><div><h3>漁農自然護理署／CSDI · 封閉山徑及郊野設施</h3><p>用於顯示封閉山徑、關閉設施及其地圖位置。官方資料日期與本機刷新時間分開顯示。</p></div><a href="https://portal.csdi.gov.hk/" target="_blank" rel="noreferrer">CSDI ↗</a></article><article><div><h3>政府部門設施資料</h3><p>{facilityDb?.sources.length ? `本機目前版本包含 ${facilityDb.sources.length} 個來源；最近建置／更新：${facilityDb.generatedAt ? formatHkt(facilityDb.generatedAt) : '未有時間'}` : '尚未下載或建立設施資料。下載後會在此顯示實際來源及抓取時間。'}</p>{facilityDb?.sources.map(source=><small className="source-record" key={source.url}>{source.name} · 抓取：{formatHkt(source.retrievedAt)} · <a href={source.url} target="_blank" rel="noreferrer">原始連結</a></small>)}</div></article><article><div><h3>裝置定位及離線資料</h3><p>目前位置來自使用者裝置的 GNSS／定位服務；燈柱資料下載後會顯示其官方資料來源。離線資料只會在完成驗證後標示為可用。</p></div></article></div><div className="copyright-box"><strong>版權及使用限制</strong><p>地圖、政府資料及各資料集的版權、授權及使用條款歸原資料提供者所有。Scout System 不主張擁有上述資料；請遵守各官方網站的授權、署名及再發布要求。App 內容只供戶外安全輔助，緊急情況請致電 999／112。</p></div></section>}
+      {tab === 'sources' && <section className="sources-page"><span className="eyebrow">DATA TRANSPARENCY</span><h2>資料來源及版權聲明</h2><p className="source-intro">「出發前」及「附近」分頁已在 App 內完整顯示目前天氣、警告、封路、封閉山徑及設施資料，毋須另外前往官方網站查看。以下連結只供核對原始出處及版權，不代表官方機構立場；資料可能延遲���缺漏或暫時無法取得，使用前請查看每項資料的狀態及時間。</p><div className="source-list"><article><div><h3>香港地政總署 · 地圖底圖及標記</h3><p>用於地圖顯示、香港地圖方格及離線底圖。</p></div><a href="https://www.landsd.gov.hk/" target="_blank" rel="noreferrer">地政總署 ↗</a></article><article><div><h3>香港天文台 · 天氣警告</h3><p>用於顯示目前天氣警告及官方發布時間。</p></div><a href="https://www.hko.gov.hk/tc/wxinfo/currwx/" target="_blank" rel="noreferrer">香港天文台 ↗</a></article><article><div><h3>運輸署 · 封路及交通事故</h3><p>用於顯示交通消息及道路狀況。</p></div><a href="https://www.td.gov.hk/" target="_blank" rel="noreferrer">運輸署 ↗</a></article><article><div><h3>漁農自然護理署／CSDI · 封閉山徑及郊野設施</h3><p>用於顯示封閉山徑、關閉設施及其地圖位置。官方資料日期與本機刷新時間分開顯示。</p></div><a href="https://portal.csdi.gov.hk/" target="_blank" rel="noreferrer">CSDI ↗</a></article><article><div><h3>山形地形資料</h3><p>離線山形資料下載地政總署 iB20000 等高線圖層（ELEVLINE，含 HEIGHT 高度值），由公開 ArcGIS 服務按地區取得；相機原型使用這些等高線生成粗略地形候選，未經野外校準且不代表官方定位。</p></div><a href="https://www.arcgis.com/home/item.html?id=566289c35c214178b572a7e934a1cd9a" target="_blank" rel="noreferrer">iB20000 ELEVLINE ↗</a></article><article><div><h3>政府部門設施資料</h3><p>{facilityDb?.sources.length ? `本機目前版本包含 ${facilityDb.sources.length} 個來源；最近建置／更新：${facilityDb.generatedAt ? formatHkt(facilityDb.generatedAt) : '未有時間'}` : '尚未下載或建立設施資料。下載後會在此顯示實際來源及抓取時間。'}</p>{facilityDb?.sources.map(source=><small className="source-record" key={source.url}>{source.name} · 抓取：{formatHkt(source.retrievedAt)} · <a href={source.url} target="_blank" rel="noreferrer">原始連結</a></small>)}</div></article><article><div><h3>裝置定位及離線資料</h3><p>目前位置來自使用者裝置的 GNSS／定位服務；燈柱資料下載後會顯示其官方資料來源。離線資料只會在完成驗證後標示為可用。</p></div></article></div><div className="copyright-box"><strong>版權及使用限制</strong><p>地圖、政府資料及各資料集的版權、授權及使用條款歸原資料提供者所有。Scout System 不主張擁有上述資料；請遵守各官方網站的授權、署名及再發布要求。App 內容只供戶外安全輔助，緊急情況請致電 999／112。</p></div></section>}
 
       {tab === 'nearby' && <section><span className="eyebrow">NEARBY</span><h2>附近資訊</h2>{!referencePoint ? <div className="empty">先去「定位」攞位置</div> : facilityLoading ? <div className="empty">正在載入內置設施資料…</div> : facilityError ? <div className="empty">{facilityError}。睇到柱號都可以去「定位」核對</div> : <><div className="filters">{(['all','toilet','aed','water','fire_station','ambulance_station','police','hospital','distance_post'] as const).map(t=><button className={facilityType===t?'active':''} key={t} onClick={()=>setFacilityType(t)}>{t==='all'?'全部':facilityName[t]}</button>)}</div><p className="near-note">直線距離，唔等於行嘅路程</p><div className="near-list">{nearby.map(x=><article key={x.id}><div><span className="source">{facilityName[x.type]} · {x.source}</span><h3>{x.name}</h3>{x.address&&<p>{x.address}</p>}{x.hours&&<small>開放時間：{x.hours}</small>}{x.detail&&<small>{x.detail}</small>}{x.phone&&<a className="facility-phone" href={`tel:${x.phone.replace(/[^\d+]/g,'')}`}>電話：{x.phone}</a>}</div><div className="distance"><strong>{formatDistance(x.distance)}</strong><span>{x.direction} · {Math.round(x.bearing)}°</span><a className="maps-link" href={mapsAppLink(x.lat,x.lng,x.name)} target="_blank" rel="noreferrer">🧭 開地圖</a></div></article>)}</div></>}</section>}
     </main>
