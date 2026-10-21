@@ -259,7 +259,13 @@ function App() {
 
   return <div className="app">
     <header><div><span className="eyebrow">WHERE AM I · HONG KONG</span><h1>我在哪裡？</h1></div><div className="header-actions"><button className="sos" onClick={() => {setCopyState('');setSosOpen(true)}}>🆘 求救</button></div></header>
-    <nav>{([['download','📥 下載'],['prepare','✅ 出發前'],['locate','📍 定位'],['nearby','🧭 附近'],['sources','📄 來源']] as const).map(([id,label]) => <button className={tab===id?'active':''} onClick={()=>setTab(id)} key={id}>{label}</button>)}</nav>
+    <nav className="bottom-nav" aria-label="主要導覽">{([
+      {id:'download',label:'下載',icon:'M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3'},
+      {id:'prepare',label:'出發前',icon:'M12 3 20 6v5c0 5-3.4 8.3-8 10-4.6-1.7-8-5-8-10V6l8-3Zm-3 9 2 2 4-4'},
+      {id:'locate',label:'定位',icon:'M12 21s7-6.1 7-12a7 7 0 1 0-14 0c0 5.9 7 12 7 12Zm0-9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z'},
+      {id:'nearby',label:'附近',icon:'M12 3v3m0 12v3M3 12h3m12 0h3m-9-9a9 9 0 1 0 9 9 9 9 0 0 0-9-9Zm3.5 5.5-2 5-5 2 2-5 5-2Z'},
+      {id:'sources',label:'資料',icon:'M6 3h8l4 4v14H6V3Zm8 0v5h5M9 12h6m-6 4h6'},
+    ] as const).map(({id,label,icon}) => <button className={tab===id?'active':''} aria-current={tab===id?'page':undefined} onClick={()=>setTab(id)} key={id}><svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={icon}/></svg><span>{label}</span></button>)}</nav>
 
     <main>
       {tab === 'locate' && <>
